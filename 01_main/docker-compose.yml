@@ -19,6 +19,13 @@ services:
       - QWEN_URL=http://qwen:8002
       - CHROMA_HOST=chromadb
       - CHROMA_PORT=8000
+      - REDIS_URL=redis://redis:6379
+      - MEM0_URL=http://mem0:8080
+      - LANGGRAPH_URL=http://langgraph:8081
+      - SEARXNG_URL=http://searxng:8080
+      - WHISPER_URL=http://whisper:8000
+      - PIPER_URL=http://piper:8000
+      - MCP_URL=http://mcp-server:3000
       - API_KEY=${API_KEY:-your-secret-key}
       - LOG_DIR=/logs
     volumes:
@@ -29,6 +36,13 @@ services:
     depends_on:
       - phi3
       - chromadb
+      - redis
+      - mem0
+      - langgraph
+      - searxng
+      - whisper
+      - piper
+      - mcp-server
     restart: unless-stopped
 
   # ------------------------------------------
@@ -92,6 +106,117 @@ services:
       - ../02_logs/chroma_db:/chroma/chroma   # データ永続化
     networks:
       - backend     # 内部ネットワークのみ
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # Redis 短期記憶（Phase1）
+  # ------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ai-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ../02_logs/redis_data:/data
+    networks:
+      - backend
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+  # ------------------------------------------
+  # Mem0 記憶整理サービス（Phase1）
+  # ------------------------------------------
+  mem0:
+    build:
+      context: ./mem0
+      dockerfile: Dockerfile
+    container_name: ai-mem0
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CHROMA_HOST=chromadb
+    networks:
+      - backend
+    depends_on:
+      - redis
+      - chromadb
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # LangGraph 思考フロー制御（Phase2）
+  # ------------------------------------------
+  langgraph:
+    build:
+      context: ./langgraph
+      dockerfile: Dockerfile
+    container_name: ai-langgraph
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - PHI3_URL=http://phi3:8001
+      - QWEN_URL=http://qwen:8002
+    networks:
+      - backend
+    depends_on:
+      - redis
+      - phi3
+      - qwen
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # SearxNG プライベート検索（Phase4）
+  # ------------------------------------------
+  searxng:
+    image: searxng/searxng:latest
+    container_name: ai-searxng
+    ports:
+      - "8082:8080"
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # Whisper 音声認識（Phase4）
+  # ------------------------------------------
+  whisper:
+    build:
+      context: ./whisper
+      dockerfile: Dockerfile
+    container_name: ai-whisper
+    ports:
+      - "8083:8000"
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # Piper 音声合成（Phase4）
+  # ------------------------------------------
+  piper:
+    build:
+      context: ./piper
+      dockerfile: Dockerfile
+    container_name: ai-piper
+    ports:
+      - "8084:8000"
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # MCP サーバー（Phase5）
+  # ------------------------------------------
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: ai-mcp-server
+    ports:
+      - "3000:3000"
+    networks:
+      - backend
     restart: unless-stopped
 
 # ==============================================
