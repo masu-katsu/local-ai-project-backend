@@ -1,1 +1,0 @@
-fastapi==0.104.1\nuvicorn==0.24.0\nwebsockets==12.0\ntorch==2.1.0\ntransformers==4.35.0\nnumpy==1.24.3\npython-dotenv==1.0.0\npytest==7.4.3\npytest-asyncio==0.21.1\npydantic==2.5.0\nhttpx==0.25.2
