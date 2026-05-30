@@ -2,14 +2,13 @@
 
 ## 📋 プロジェクト概要
 
-このプロジェクトは、**複数のAIモデルをDocker環境で動作させ、Unity/WebSocketで統合したハイブリッドAIシステム**です。軽量な会話AI（Phi3）と高性能な生成AI（Qwen）を目的に応じて使い分け、会話履歴管理機能を搭載しています。
+このプロジェクトは、**複数のAIモデルをDocker環境で動作させるローカルAIシステム**です。軽量な会話AI（Phi3）と高性能な生成AI（Qwen）を目的に応じて使い分け、会話履歴管理機能を搭載しています。
 
 ### 🎯 主な特徴
 
 - **デュアルAI構成**: Phi3（Intent分類用）と Qwen（実行用）の2段階処理
 - **マイクロサービスアーキテクチャ**: Docker Composeで各サービスを独立管理
 - **会話履歴管理**: ChromaDBを使用した継続的な記憶機能
-- **Unity統合**: WebSocketで双方向通信可能
 - **ローカル実行**: インターネット不要でプライベートに実行可能
 
 ---
@@ -19,7 +18,7 @@
 ```
 local-ai-project/
 │
-├── 01_main/                          # 🌟 メインシステム（稼働中）
+├── 01_main/                          # 🌟 メインシステム
 │   ├── docker-compose.yml            # サービス全体のオーケストレーション
 │   ├── .env                          # 環境変数設定ファイル
 │   │
@@ -43,42 +42,19 @@ local-ai-project/
 │   │   └── app/
 │   │       └── main.py               # LLM推論エンドポイント
 │   │
-│   └── unity/                        # 🎮 Unityプロジェクト
-│       ├── LocalAIChat/              # Unity プロジェクトフォルダ
-│       └── Scripts/                  # C# スクリプト
-│           ├── AIManager.cs          # AI通信管理
-│           └── UIManager.cs          # UI制御
+│   └── mem0/                         # 💾 メモリ管理（開発中）
+│       └── app/
 │
-├── 02_logs/                          # 📊 ログ・会話データ
-│   ├── chroma_db/                    # ChromaDB永続化ストレージ（ベクトル＋メタデータ）
-│   ├── conversations/                # 会話ログ（JSON形式）
-│   │   ├── default_user_2026-04-30.jsonl
-│   │   ├── default_user_2026-05-01.jsonl
-│   │   └── ...（ユーザー別・日付別）
-│   └── system/                       # システムログ（エラー・イベント）
+├── 02_logs/                          # 📊 ログ・会話データ（実行時に作成）
+│   ├── chroma_db/                    # ChromaDB永続化ストレージ
+│   └── conversations/                # 会話ログ（JSON形式）
 │
-├── 03_models/                        # 🤖 AIモデルファイル保存先
+├── 03_models/                        # 🤖 AIモデルファイル保存先（モデル配置が必要）
 │   ├── phi3/                         # Phi3 モデル（GGUF形式）
-│   │   └── Phi-3-mini-4k-instruct-q4.gguf
 │   └── qwen/                         # Qwen モデル（GGUF形式）
-│       └── Qwen2.5-Coder-3B-4bit.gguf
 │
-├── backend/                          # 🔧 オプション：バックエンドAPI
-│   ├── app.py                        # メインアプリ
-│   ├── llm_manager.py                # LLM管理モジュール
-│   ├── memory_manager.py             # メモリ管理
-│   ├── requirements.txt
-│   └── tests/                        # テストスイート
-│
-├── docker/                           # 🐳 Docker設定（レガシー）
-├── docs/                             # 📖 ドキュメント
-│   ├── ARCHITECTURE.md               # システム全体設計
-│   ├── COMMUNICATION_FLOW.md         # WebSocket通信仕様
-│   └── SETUP_GUIDE.md                # セットアップ詳細ガイド
-├── memory/                           # 💾 会話メモリ＆抽出器
 ├── config.json                       # 全体設定ファイル
-├── docker-compose.yml                # ルートレベルのCompose定義
-└── requirements.txt                  # Pythonパッケージ一覧
+└── README.md                         # 本ファイル
 ```
 
 ---
@@ -89,10 +65,9 @@ local-ai-project/
 
 ```
 ┌─────────────┐
-│   Unity     │ (ゲーム/フロントエンド)
-│  クライアント  │
+│   クライアント  │ (HTTP/WebSocket)
 └──────┬──────┘
-       │ WebSocket/HTTP
+       │ HTTP/WS
        │ ChatRequest (JSON)
        ▼
 ┌─────────────────────────────┐
@@ -130,7 +105,7 @@ local-ai-project/
 
 ### **通信ステップ詳細**
 
-#### **1️⃣ リクエスト段階 (Unity → FastAPI)**
+#### **1️⃣ リクエスト段階 (クライアント → FastAPI)**
 ```json
 {
   "message": "Pythonで階乗を計算する関数を作って",
@@ -147,7 +122,7 @@ local-ai-project/
 - FastAPIが Qwen に「[MODE: CODE] の指示」を付加して送信
 - Qwen が詳細で実用的なコード例を生成
 
-#### **4️⃣ 応答段階 (FastAPI → Unity)**
+#### **4️⃣ 応答段階 (FastAPI → クライアント)**
 ```json
 {
   "response": "def factorial(n):\n    return 1 if n <= 1 else n * factorial(n-1)",
@@ -252,13 +227,10 @@ curl -X POST "http://localhost:8000/chat" \
   }'
 ```
 
-### **ステップ5: Unity との連携**
-1. Unity Editor で `unity/LocalAIChat/` を開く
-2. `Scripts/AIManager.cs` の WebSocket URL を確認：
-   ```csharp
-   private string wsUrl = "ws://localhost:8000/ws";
-   ```
-3. Play ボタンで起動
+### **ステップ5: クライアントとの連携**
+FastAPIサーバーはHTTP APIとWebSocketを提供します。クライアントアプリケーションから以下のエンドポイントにアクセス可能です：
+- HTTP API: `http://localhost:8000/docs` (Swagger UI)
+- WebSocket: `ws://localhost:8000/ws`
 
 ---
 
@@ -310,7 +282,7 @@ ws.close();
 ```json
 {
   "server": {
-    "port": 8000,
+    "port": 8080,
     "host": "localhost"
   },
   "model": {
@@ -322,7 +294,7 @@ ws.close();
     "timeout": 300
   },
   "websocket": {
-    "url": "ws://localhost:8000/ws",
+    "url": "ws://localhost:8080/ws",
     "protocol": "json"
   }
 }
@@ -379,8 +351,8 @@ docker-compose logs -f
 - ✅ Docker ネットワークで `phi3:8001` / `qwen:8002` に疎通があるか確認
 - ✅ メモリが十分か確認（4GB以上推奨）
 
-### **Q: Unity から接続できない**
-- ✅ WebSocket URL (`AIManager.cs`) が正しいか確認
+### **Q: クライアントから接続できない**
+- ✅ WebSocket URL が正しいか確認
 - ✅ FastAPI が起動しているか確認
 - ✅ ファイアウォール設定を確認
 
@@ -401,37 +373,10 @@ aiofiles==23.2.1          # 非同期ファイルIO
 
 ### **Phi3/Qwen (LLM)**
 ```
-transformers              # Hugging Face モデル読み込み
-torch / onnxruntime       # 推論エンジン
-numpy                     # 数値計算
-```
-
----
-
-## 🎮 Unity 統合例（C#）
-
-```csharp
-// AIManager.cs
-using UnityEngine;
-using WebSocketSharp;
-
-public class AIManager : MonoBehaviour
-{
-    private WebSocket ws;
-    
-    void Start()
-    {
-        ws = new WebSocket("ws://localhost:8000/ws");
-        ws.OnMessage += (sender, e) => Debug.Log(e.Data);
-        ws.Connect();
-    }
-    
-    public void SendMessage(string text)
-    {
-        string json = JsonUtility.ToJson(new { message = text, user_id = "player_1" });
-        ws.Send(json);
-    }
-}
+fastapi==0.115.0          # Webフレームワーク
+uvicorn==0.30.0           # ASGIサーバー
+llama-cpp-python          # LLM推論エンジン
+pydantic==2.9.0           # データ検証
 ```
 
 ---
@@ -445,8 +390,7 @@ public class AIManager : MonoBehaviour
 ## 📞 サポート
 
 トラブルや質問がある場合：
-- ドキュメント (`/docs/`) を確認
 - ログファイル (`/02_logs/`) を確認
 - GitHub Issues で報告
 
-**最終更新**: 2026年5月11日
+**最終更新**: 2026年5月30日
