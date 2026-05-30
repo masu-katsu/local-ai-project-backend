@@ -9,6 +9,11 @@
 - **デュアルAI構成**: Phi3（Intent分類用）と Qwen（実行用）の2段階処理
 - **マイクロサービスアーキテクチャ**: Docker Composeで各サービスを独立管理
 - **会話履歴管理**: ChromaDBを使用した継続的な記憶機能
+- **記憶管理システム**: Redisによる短期記憶、Mem0による記憶整理、自動会話要約
+- **感情管理システム**: ユーザー感情の検出・追跡、Unityアニメーションパラメータ生成
+- **タスク管理とツールレジストリ**: タスクの自動分析・分解、複数ツールの統合実行
+- **マルチモーダルサポート**: 音声認識（Whisper）、音声合成（Piper）、プライベート検索（SearxNG）
+- **高度機能**: MCP（外部ツール統合）、Vision（画像処理）、自律エージェント
 - **ローカル実行**: インターネット不要でプライベートに実行可能
 
 ---
@@ -28,7 +33,18 @@ local-ai-project/
 │   │   └── app/
 │   │       ├── main.py               # FastAPI メインアプリケーション
 │   │       ├── router.py             # AI ルーター（Intent分類 + 振り分け）
-│   │       └── history.py            # 会話履歴管理（ChromaDB連携）
+│   │       ├── history.py            # 会話履歴管理（ChromaDB連携）
+│   │       ├── short_term_memory.py  # Redis短期記憶管理
+│   │       ├── memory_organizer.py   # Mem0記憶整理
+│   │       ├── conversation_summarizer.py  # 会話要約
+│   │       ├── emotion_manager.py    # 感情管理
+│   │       ├── task_manager.py       # タスク管理
+│   │       ├── tool_registry.py      # ツールレジストリ
+│   │       ├── searxng_client.py     # プライベート検索
+│   │       ├── voice_clients.py      # 音声認識・合成
+│   │       ├── mcp_client.py         # MCPクライアント
+│   │       ├── vision_processor.py   # 画像処理
+│   │       └── autonomous_agent.py  # 自律エージェント
 │   │
 │   ├── phi3/                         # 🧠 軽量AI（Intent分類専用）
 │   │   ├── Dockerfile
@@ -42,18 +58,47 @@ local-ai-project/
 │   │   └── app/
 │   │       └── main.py               # LLM推論エンドポイント
 │   │
-│   └── mem0/                         # 💾 メモリ管理（開発中）
+│   ├── mem0/                         # 💾 記憶整理サービス
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── app/
+│   │       └── main.py
+│   │
+│   ├── langgraph/                    # 🔄 思考フロー制御
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── app/
+│   │       └── main.py
+│   │
+│   ├── whisper/                      # 🎤 音声認識
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── app/
+│   │       └── main.py
+│   │
+│   ├── piper/                        # 🔊 音声合成
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── app/
+│   │       └── main.py
+│   │
+│   └── mcp-server/                   # 🔗 MCPサーバー
+│       ├── Dockerfile
+│       ├── requirements.txt
 │       └── app/
+│           └── main.py
 │
 ├── 02_logs/                          # 📊 ログ・会話データ（実行時に作成）
 │   ├── chroma_db/                    # ChromaDB永続化ストレージ
-│   └── conversations/                # 会話ログ（JSON形式）
+│   ├── conversations/                # 会話ログ（JSON形式）
+│   └── redis_data/                   # Redisデータ永続化
 │
 ├── 03_models/                        # 🤖 AIモデルファイル保存先（モデル配置が必要）
 │   ├── phi3/                         # Phi3 モデル（GGUF形式）
 │   └── qwen/                         # Qwen モデル（GGUF形式）
 │
 ├── config.json                       # 全体設定ファイル
+├── IMPLEMENTATION_SUMMARY.md         # 実装サマリー
 └── README.md                         # 本ファイル
 ```
 
