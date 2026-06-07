@@ -3,14 +3,16 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
 import httpx
+import re
 
 logger = logging.getLogger(__name__)
 
 class MemoryOrganizer:
     """Mem0を用いた記憶整理システム"""
     
-    def __init__(self, mem0_url: str = "http://mem0:8080"):
+    def __init__(self, mem0_url: str = "http://mem0:8080", qwen_url: str = "http://qwen:8002"):
         self.mem0_url = mem0_url
+        self.qwen_url = qwen_url
         self.client = httpx.AsyncClient(timeout=30.0)
         logger.info("MemoryOrganizer初期化完了")
     
@@ -20,7 +22,7 @@ class MemoryOrganizer:
         user_id: str
     ) -> List[Dict[str, Any]]:
         """
-        会話から重要情報を抽出
+        会話から重要情報を抽出（LLMを使用）
         
         Args:
             conversation: 会話テキスト
@@ -29,17 +31,98 @@ class MemoryOrganizer:
         Returns:
             抽出された重要情報のリスト
         """
-        # LLMを用いて重要情報を抽出
-        # 実装はPhase2のLangGraphと統合
+        try:
+            # LLMを使用して重要情報を抽出
+            prompt = f"""
+以下の会話から重要な情報を抽出してください。
+会話: {conversation}
+
+出力形式（JSON）:
+{{
+  "important_points": [
+    {{"content": "重要な情報", "importance": 0.8, "category": "category_name"}},
+    ...
+  ]
+}}
+
+カテゴリ例: project, preference, personal, task, other
+"""
+            
+            response = await self.client.post(
+                f"{self.qwen_url}/generate",
+                json={
+                    "prompt": prompt,
+                    "max_tokens": 512,
+                    "temperature": 0.7
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            llm_response = data.get("response", "")
+            
+            # LLMレスポンスから重要情報を抽出
+            important_points = self._parse_important_points(llm_response)
+            
+            if not important_points:
+                # フォールバック: 簡易抽出
+                important_points = self._fallback_extract(conversation)
+            
+            return important_points
+            
+        except Exception as e:
+            logger.error(f"LLMによる重要情報抽出失敗: {e}")
+            # フォールバック: 簡易抽出
+            return self._fallback_extract(conversation)
+    
+    def _parse_important_points(self, llm_response: str) -> List[Dict[str, Any]]:
+        """LLMレスポンスから重要情報を抽出"""
+        try:
+            import json
+            # JSON部分を抽出
+            json_match = re.search(r'\{[\s\S]*\}', llm_response)
+            if json_match:
+                data = json.loads(json_match.group())
+                points = data.get("important_points", [])
+                # バリデーション
+                validated_points = []
+                for point in points:
+                    if "content" in point:
+                        validated_points.append({
+                            "content": point["content"],
+                            "importance": float(point.get("importance", 0.5)),
+                            "category": point.get("category", "general")
+                        })
+                return validated_points
+        except Exception as e:
+            logger.warning(f"重要情報抽出失敗: {e}")
+        
+        return []
+    
+    def _fallback_extract(self, conversation: str) -> List[Dict[str, Any]]:
+        """フォールバック: 簡易抽出"""
         important_points = []
         
-        # 簡易実装（実際はLLMを使用）
-        if "Unity" in conversation:
-            important_points.append({
-                "content": "ユーザーはUnityで開発中",
-                "importance": 0.8,
-                "category": "project"
-            })
+        # キーワードベースの簡易抽出
+        keywords = {
+            "Unity": {"importance": 0.8, "category": "project"},
+            "プロジェクト": {"importance": 0.7, "category": "project"},
+            "好き": {"importance": 0.6, "category": "preference"},
+            "嫌い": {"importance": 0.6, "category": "preference"},
+            "名前": {"importance": 0.9, "category": "personal"},
+            "住所": {"importance": 0.9, "category": "personal"},
+            "電話": {"importance": 0.9, "category": "personal"},
+            "メール": {"importance": 0.8, "category": "personal"},
+            "タスク": {"importance": 0.7, "category": "task"},
+            "期限": {"importance": 0.8, "category": "task"},
+        }
+        
+        for keyword, info in keywords.items():
+            if keyword in conversation:
+                important_points.append({
+                    "content": f"会話に「{keyword}」が含まれています",
+                    "importance": info["importance"],
+                    "category": info["category"]
+                })
         
         return important_points
     

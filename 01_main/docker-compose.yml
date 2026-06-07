@@ -40,8 +40,6 @@ services:
       - mem0
       - langgraph
       - searxng
-      - whisper
-      - piper
       - mcp-server
     restart: unless-stopped
 
@@ -190,6 +188,8 @@ services:
     networks:
       - backend
     restart: unless-stopped
+    profiles:
+      - with-voice
 
   # ------------------------------------------
   # Piper 音声合成（Phase4）
@@ -204,6 +204,8 @@ services:
     networks:
       - backend
     restart: unless-stopped
+    profiles:
+      - with-voice
 
   # ------------------------------------------
   # MCP サーバー（Phase5）

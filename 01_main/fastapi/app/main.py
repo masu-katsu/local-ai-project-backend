@@ -81,7 +81,7 @@ conversation_history = ConversationHistory()
 
 # Phase1: 記憶システムの初期化
 short_term_memory = ShortTermMemory(redis_url=REDIS_URL)
-memory_organizer = MemoryOrganizer(mem0_url=MEM0_URL)
+memory_organizer = MemoryOrganizer(mem0_url=MEM0_URL, qwen_url=QWEN_URL)
 conversation_summarizer = ConversationSummarizer(ai_router=ai_router)
 
 # Phase2: 感情システムの初期化
@@ -91,14 +91,19 @@ emotion_manager = EmotionManager()
 task_manager = TaskManager()
 tool_registry = ToolRegistry()
 
-# Phase4: 音声クライアントの初期化
-voice_input = VoiceInputClient(whisper_url=WHISPER_URL)
-voice_output = VoiceOutputClient(piper_url=PIPER_URL)
+# Phase4: 音声クライアントの初期化（オプション）
+try:
+    voice_input = VoiceInputClient(whisper_url=WHISPER_URL)
+    voice_output = VoiceOutputClient(piper_url=PIPER_URL)
+except Exception as e:
+    logger.warning(f"音声クライアント初期化失敗（音声機能はオプション）: {e}")
+    voice_input = None
+    voice_output = None
 
 # Phase5: MCP, Vision, Autonomous Agentの初期化
 mcp_client = MCPClient(mcp_url=MCP_URL)
 vision_processor = VisionProcessor()
-autonomous_agent = AutonomousAgent(tool_registry)
+autonomous_agent = AutonomousAgent(tool_registry, qwen_url=QWEN_URL)
 
 
 # ============================================
@@ -127,7 +132,7 @@ class ChatResponse(BaseModel):
 @app.middleware("http")
 async def verify_api_key(request: Request, call_next):
     # ヘルスチェックとドキュメントはスキップ
-    skip_paths = ["/api/health", "/docs", "/openapi.json", "/redoc"]
+    skip_paths = ["/api/health", "/health", "/docs", "/openapi.json", "/redoc"]
     if request.url.path in skip_paths:
         return await call_next(request)
 
@@ -161,8 +166,8 @@ async def health_check():
             "task_manager": "ok",
             "tool_registry": "ok",
             "searxng": "ok",
-            "whisper": "ok",
-            "piper": "ok",
+            "whisper": "ok" if voice_input else "disabled",
+            "piper": "ok" if voice_output else "disabled",
             "mcp_server": "ok",
             "vision_processor": "ok",
             "autonomous_agent": "ok",
@@ -529,12 +534,16 @@ async def execute_tool(tool_name: str, **kwargs):
 @app.post("/api/voice/transcribe")
 async def transcribe_audio(audio_data: bytes, filename: str = "audio.wav"):
     """音声をテキストに変換"""
+    if voice_input is None:
+        raise HTTPException(status_code=503, detail="音声認識サービスが利用できません")
     text = await voice_input.transcribe(audio_data, filename)
     return {"text": text}
 
 @app.post("/api/voice/synthesize")
 async def synthesize_audio(text: str, voice: str = "ja_jp_pt_multispeaker"):
     """テキストを音声に変換"""
+    if voice_output is None:
+        raise HTTPException(status_code=503, detail="音声合成サービスが利用できません")
     audio = await voice_output.synthesize(text, voice)
     return {"audio": audio, "voice": voice}
 

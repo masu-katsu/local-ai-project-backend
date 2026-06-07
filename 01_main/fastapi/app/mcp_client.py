@@ -20,7 +20,9 @@ class MCPClient:
             response.raise_for_status()
             
             data = response.json()
-            return data.get("result", {}).get("tools", [])
+            tools = data.get("result", {}).get("tools", [])
+            logger.info(f"ツール一覧取得: {len(tools)}件")
+            return tools
         except Exception as e:
             logger.error(f"ツール一覧取得失敗: {e}")
             return []
@@ -29,12 +31,32 @@ class MCPClient:
         self,
         tool_name: str,
         arguments: Dict[str, Any]
-    ) -> Any:
+    ) -> Dict[str, Any]:
         """ツールを呼び出し"""
         try:
-            # 簡易実装
             logger.info(f"MCPツール呼び出し: {tool_name}")
-            return {"status": "success", "tool": tool_name}
+            
+            # MCPサーバーのツール呼び出しエンドポイントを使用
+            response = await self.client.post(
+                f"{self.mcp_url}/mcp/call",
+                json={
+                    "tool_name": tool_name,
+                    "arguments": arguments
+                }
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if data.get("error"):
+                logger.error(f"ツール実行エラー: {data['error']}")
+                return {"status": "error", "error": data["error"]}
+            
+            return {
+                "status": "success",
+                "tool": tool_name,
+                "result": data.get("result")
+            }
         except Exception as e:
             logger.error(f"ツール呼び出し失敗: {e}")
             return {"status": "error", "error": str(e)}

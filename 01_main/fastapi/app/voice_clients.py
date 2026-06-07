@@ -83,11 +83,16 @@ class VoiceOutputClient:
             response.raise_for_status()
             
             data = response.json()
-            # 実際の実装ではbase64デコードが必要
-            audio_data = data.get("audio", "")
-            
-            logger.info(f"音声合成完了: {len(text)}文字")
-            return audio_data.encode() if audio_data else None
+            # base64デコードを実装
+            audio_base64 = data.get("audio", "")
+            if audio_base64:
+                import base64
+                audio_data = base64.b64decode(audio_base64)
+                logger.info(f"音声合成完了: {len(text)}文字, {len(audio_data)} bytes")
+                return audio_data
+            else:
+                logger.warning("音声データが空です")
+                return None
             
         except Exception as e:
             logger.error(f"音声合成失敗: {e}")
