@@ -3,6 +3,9 @@ from enum import Enum
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import logging
+import httpx
+import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -119,9 +122,12 @@ class Task:
 class TaskManager:
     """タスク管理システム"""
     
-    def __init__(self):
+    def __init__(self, phi3_url: str = None):
         self.tasks: Dict[str, Task] = {}
         self.user_tasks: Dict[str, List[str]] = {}  # user_id -> task_ids
+        self.phi3_url = phi3_url or os.getenv("PHI3_URL", "http://phi3:8001")
+        self.client = httpx.AsyncClient(timeout=30.0)
+        logger.info(f"TaskManager初期化: LLMベースタスク分析有効 ({self.phi3_url})")
     
     def create_task(
         self,
@@ -229,10 +235,108 @@ class TaskManager:
         user_id: str
     ) -> Optional[Task]:
         """
-        メッセージからタスクを分析・作成
-        
-        簡易実装（実際はLLMを使用）
+        メッセージからタスクを分析・作成（LLMベース）
         """
+        try:
+            # LLMを使用してタスクを分析
+            prompt = f"""
+以下のメッセージからタスクを分析してください。JSON形式で出力してください。
+
+メッセージ: {message}
+
+出力形式:
+{{
+  "is_task": true/false,
+  "title": "タスクタイトル",
+  "description": "タスクの詳細説明",
+  "priority": "low|medium|high|urgent",
+  "subtasks": [
+    {{"title": "サブタスク1", "description": "説明"}},
+    {{"title": "サブタスク2", "description": "説明"}}
+  ]
+}}
+
+タスク判定基準:
+- 明確なアクション要求がある場合（作って、実装して、開発して、やって、作成など）はis_task=true
+- 単なる質問や会話の場合はis_task=false
+"""
+            
+            response = await self.client.post(
+                f"{self.phi3_url}/generate",
+                json={
+                    "prompt": prompt,
+                    "max_tokens": 512,
+                    "temperature": 0.3
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            llm_response = data.get("response", "")
+            
+            # JSONをパース
+            task_data = self._parse_task_response(llm_response)
+            
+            if task_data and task_data.get("is_task"):
+                # タスクを作成
+                priority_map = {
+                    "low": TaskPriority.LOW,
+                    "medium": TaskPriority.MEDIUM,
+                    "high": TaskPriority.HIGH,
+                    "urgent": TaskPriority.URGENT
+                }
+                priority = priority_map.get(task_data.get("priority", "medium"), TaskPriority.MEDIUM)
+                
+                task = self.create_task(
+                    title=task_data.get("title", message[:50]),
+                    description=task_data.get("description", message),
+                    priority=priority,
+                    user_id=user_id
+                )
+                
+                # サブタスクを追加
+                for subtask_data in task_data.get("subtasks", []):
+                    task.add_subtask(
+                        subtask_data.get("title", ""),
+                        subtask_data.get("description", "")
+                    )
+                
+                logger.info(f"LLMタスク分析: {task.task_id} - {task.title}")
+                return task
+            
+        except Exception as e:
+            logger.warning(f"LLMタスク分析失敗、フォールバック使用: {e}")
+        
+        # フォールバック: キーワードベース
+        return self._fallback_task_analysis(message, user_id)
+    
+    def _parse_task_response(self, llm_response: str) -> Optional[Dict[str, Any]]:
+        """LLMレスポンスからタスクデータをパース"""
+        try:
+            # JSON部分を抽出
+            json_match = re.search(r'\{[\s\S]*\}', llm_response)
+            if json_match:
+                data = json.loads(json_match.group())
+                
+                # バリデーション
+                valid_priorities = ["low", "medium", "high", "urgent"]
+                priority = data.get("priority", "medium")
+                if priority not in valid_priorities:
+                    priority = "medium"
+                
+                return {
+                    "is_task": data.get("is_task", False),
+                    "title": data.get("title", ""),
+                    "description": data.get("description", ""),
+                    "priority": priority,
+                    "subtasks": data.get("subtasks", [])
+                }
+        except Exception as e:
+            logger.warning(f"タスクレスポンスパース失敗: {e}")
+        
+        return None
+    
+    def _fallback_task_analysis(self, message: str, user_id: str) -> Optional[Task]:
+        """フォールバック: キーワードベースタスク分析"""
         # タスクキーワード検出
         task_keywords = ["作って", "実装して", "開発して", "やって", "作成"]
         
@@ -251,6 +355,7 @@ class TaskManager:
             task.add_subtask("実装", "実装を行う")
             task.add_subtask("テスト", "テストを行う")
             
+            logger.info(f"フォールバックタスク分析: {task.task_id}")
             return task
         
         return None

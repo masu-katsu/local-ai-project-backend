@@ -4,6 +4,8 @@ from typing import Dict, Any, List, Optional, TypedDict, Annotated
 import logging
 import operator
 import os
+import re
+import json
 from langgraph.graph import StateGraph, END
 import httpx
 
@@ -61,40 +63,150 @@ class LangGraphProcessor:
         return workflow.compile()
     
     async def _emotion_update(self, state: AgentState) -> AgentState:
-        """感情を更新"""
+        """感情を更新（LLMベース）"""
         state["processing_steps"].append("emotion_update")
-        # 感情検出ロジック（簡易実装）
-        if any(word in state["input_message"].lower() for word in ["嬉しい", "楽しい", "すごい"]):
-            state["emotion"] = {"mood": "positive", "energy": 80}
-        elif any(word in state["input_message"].lower() for word in ["悲しい", "辛い", "残念"]):
-            state["emotion"] = {"mood": "negative", "energy": 30}
-        else:
-            state["emotion"] = {"mood": "neutral", "energy": 50}
+        try:
+            # LLMを使用して感情を分析
+            prompt = f"""
+以下のメッセージから感情を分析してください。JSON形式で出力してください。
+
+メッセージ: {state["input_message"]}
+
+出力形式:
+{{
+  "mood": "happy|sad|excited|curious|neutral|angry|anxious",
+  "energy": 0-100の整数,
+  "confidence": 0.0-1.0の小数
+}}
+"""
+            response = await self.client.post(
+                f"{self.phi3_url}/generate",
+                json={"prompt": prompt, "max_tokens": 256, "temperature": 0.3}
+            )
+            response.raise_for_status()
+            data = response.json()
+            llm_response = data.get("response", "")
+            
+            # JSONをパース
+            json_match = re.search(r'\{[\s\S]*\}', llm_response)
+            if json_match:
+                emotion_data = json.loads(json_match.group())
+                state["emotion"] = {
+                    "mood": emotion_data.get("mood", "neutral"),
+                    "energy": emotion_data.get("energy", 50),
+                    "confidence": emotion_data.get("confidence", 0.7)
+                }
+            else:
+                state["emotion"] = {"mood": "neutral", "energy": 50, "confidence": 0.5}
+        except Exception as e:
+            logger.warning(f"感情更新失敗: {e}")
+            state["emotion"] = {"mood": "neutral", "energy": 50, "confidence": 0.5}
         return state
     
     async def _memory_search(self, state: AgentState) -> AgentState:
-        """記憶を検索"""
+        """記憶を検索（実際のサービス連携）"""
         state["processing_steps"].append("memory_search")
-        # 記憶検索ロジック（簡易実装）
-        state["long_term_context"] = ["過去の会話コンテキスト1", "過去の会話コンテキスト2"]
+        try:
+            # Mem0 APIを呼び出して記憶を検索
+            mem0_url = os.getenv("MEM0_URL", "http://mem0:8080")
+            response = await self.client.get(
+                f"{mem0_url}/memories/{state['user_id']}",
+                params={"query": state["input_message"], "top_k": 3}
+            )
+            response.raise_for_status()
+            memories = response.json()
+            
+            # 記憶をコンテキストに変換
+            state["long_term_context"] = [
+                mem.get("content", "") for mem in memories if mem.get("content")
+            ]
+            logger.info(f"記憶検索: {len(state['long_term_context'])}件")
+        except Exception as e:
+            logger.warning(f"記憶検索失敗: {e}")
+            state["long_term_context"] = []
         return state
     
     async def _task_analysis(self, state: AgentState) -> AgentState:
-        """タスクを分析"""
+        """タスクを分析（LLMベース）"""
         state["processing_steps"].append("task_analysis")
-        # タスク分析ロジック（簡易実装）
-        state["task_analysis_result"] = {
-            "is_task": False,
-            "task_type": None,
-            "priority": "medium"
-        }
+        try:
+            # LLMを使用してタスクを分析
+            prompt = f"""
+以下のメッセージからタスクを分析してください。JSON形式で出力してください。
+
+メッセージ: {state["input_message"]}
+
+出力形式:
+{{
+  "is_task": true/false,
+  "task_type": "string",
+  "priority": "low|medium|high|urgent"
+}}
+"""
+            response = await self.client.post(
+                f"{self.phi3_url}/generate",
+                json={"prompt": prompt, "max_tokens": 256, "temperature": 0.3}
+            )
+            response.raise_for_status()
+            data = response.json()
+            llm_response = data.get("response", "")
+            
+            # JSONをパース
+            json_match = re.search(r'\{[\s\S]*\}', llm_response)
+            if json_match:
+                task_data = json.loads(json_match.group())
+                state["task_analysis_result"] = {
+                    "is_task": task_data.get("is_task", False),
+                    "task_type": task_data.get("task_type", None),
+                    "priority": task_data.get("priority", "medium")
+                }
+            else:
+                state["task_analysis_result"] = {"is_task": False, "task_type": None, "priority": "medium"}
+        except Exception as e:
+            logger.warning(f"タスク分析失敗: {e}")
+            state["task_analysis_result"] = {"is_task": False, "task_type": None, "priority": "medium"}
         return state
     
     async def _tool_selection(self, state: AgentState) -> AgentState:
-        """ツールを選択"""
+        """ツールを選択（LLMベース）"""
         state["processing_steps"].append("tool_selection")
-        # ツール選択ロジック（簡易実装）
-        state["selected_tools"] = []
+        try:
+            # LLMを使用してツールを選択
+            prompt = f"""
+以下のタスクに必要なツールを選択してください。JSON形式で出力してください。
+
+タスク: {state["input_message"]}
+タスク分析: {state["task_analysis_result"]}
+
+利用可能なツール:
+- web_search: Web検索
+- filesystem: ファイルシステム操作
+- github: GitHub操作
+- vscode: VSCode操作
+
+出力形式:
+{{
+  "selected_tools": ["tool1", "tool2"]
+}}
+"""
+            response = await self.client.post(
+                f"{self.phi3_url}/generate",
+                json={"prompt": prompt, "max_tokens": 256, "temperature": 0.3}
+            )
+            response.raise_for_status()
+            data = response.json()
+            llm_response = data.get("response", "")
+            
+            # JSONをパース
+            json_match = re.search(r'\{[\s\S]*\}', llm_response)
+            if json_match:
+                tool_data = json.loads(json_match.group())
+                state["selected_tools"] = tool_data.get("selected_tools", [])
+            else:
+                state["selected_tools"] = []
+        except Exception as e:
+            logger.warning(f"ツール選択失敗: {e}")
+            state["selected_tools"] = []
         return state
     
     async def _llm_inference(self, state: AgentState) -> AgentState:
@@ -121,9 +233,26 @@ class LangGraphProcessor:
         return state
     
     async def _memory_save(self, state: AgentState) -> AgentState:
-        """記憶を保存"""
+        """記憶を保存（実際のサービス連携）"""
         state["processing_steps"].append("memory_save")
-        # 記憶保存ロジック（簡易実装）
+        try:
+            # Mem0 APIを呼び出して記憶を保存
+            mem0_url = os.getenv("MEM0_URL", "http://mem0:8080")
+            memory = {
+                "content": state["input_message"],
+                "user_id": state["user_id"],
+                "importance": 0.5,
+                "category": "conversation",
+                "timestamp": state.get("timestamp", "")
+            }
+            response = await self.client.post(
+                f"{mem0_url}/memories",
+                json=memory
+            )
+            response.raise_for_status()
+            logger.info("記憶保存成功")
+        except Exception as e:
+            logger.warning(f"記憶保存失敗: {e}")
         return state
     
     async def _final_response(self, state: AgentState) -> AgentState:

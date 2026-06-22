@@ -9,6 +9,7 @@ import os
 import time
 import logging
 import asyncio
+import json
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -26,6 +27,7 @@ from app.voice_clients import VoiceInputClient, VoiceOutputClient
 from app.mcp_client import MCPClient
 from app.vision_processor import VisionProcessor
 from app.autonomous_agent import AutonomousAgent
+import re
 
 # ============================================
 # ログ設定
@@ -85,10 +87,10 @@ memory_organizer = MemoryOrganizer(mem0_url=MEM0_URL, qwen_url=QWEN_URL)
 conversation_summarizer = ConversationSummarizer(ai_router=ai_router)
 
 # Phase2: 感情システムの初期化
-emotion_manager = EmotionManager()
+emotion_manager = EmotionManager(phi3_url=PHI3_URL)
 
 # Phase3: タスク管理とツールレジストリの初期化
-task_manager = TaskManager()
+task_manager = TaskManager(phi3_url=PHI3_URL)
 tool_registry = ToolRegistry()
 
 # Phase4: 音声クライアントの初期化（オプション）
@@ -203,7 +205,7 @@ async def chat(request: ChatRequest):
     current_emotion = current_state.get("emotion", {"mood": "neutral", "energy": 50})
     
     # 感情を検出・更新
-    detected_emotion = emotion_manager.detect_emotion(request.message, current_emotion)
+    detected_emotion = await emotion_manager.detect_emotion(request.message, current_emotion)
     updated_emotion = emotion_manager.update_emotion(user_id, detected_emotion)
     logger.info(f"[{user_id}] 感情: {updated_emotion}")
     
@@ -326,13 +328,8 @@ async def chat(request: ChatRequest):
     # =========================================
     # Step 6: 応答後に状態更新
     # =========================================
-    # トピックを推定（簡易）
-    if "Unity" in request.message:
-        topic = "Unity"
-    elif "コード" in request.message or "プログラム" in request.message:
-        topic = "プログラミング"
-    else:
-        topic = current_state.get("current_topic", "general")
+    # トピックを推定（LLMベース）
+    topic = await _estimate_topic(request.message, current_state.get("current_topic", "general"), ai_router)
     
     short_term_memory.update_state(
         user_id,
@@ -628,3 +625,48 @@ async def startup_event():
     logger.info("  AutonomousAgent: 初期化完了")
     
     logger.info("=" * 50)
+
+async def _estimate_topic(message: str, current_topic: str, ai_router: AIRouter) -> str:
+    """
+    トピックを推定（LLMベース）
+    """
+    try:
+        prompt = f"""
+以下のメッセージのトピックを推定してください。現在のトピック: {current_topic}
+
+メッセージ: {message}
+
+出力形式（JSON）:
+{{
+  "topic": "トピック名",
+  "confidence": 0.0-1.0
+}}
+
+トピック例: Unity, プログラミング, ゲーム開発, 一般, AI, データ分析, Web開発, etc.
+"""
+        
+        response = await ai_router.send_to_ai(
+            model="phi3",
+            message=prompt,
+            context=[]
+        )
+        
+        # JSONをパース
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            data = json.loads(json_match.group())
+            topic = data.get("topic", current_topic)
+            logger.info(f"LLMトピック推定: {topic}")
+            return topic
+    except Exception as e:
+        logger.warning(f"LLMトピック推定失敗、フォールバック使用: {e}")
+    
+    # フォールバック: キーワードベース
+    if "Unity" in message:
+        return "Unity"
+    elif "コード" in message or "プログラム" in message:
+        return "プログラミング"
+    elif "ゲーム" in message:
+        return "ゲーム開発"
+    else:
+        return current_topic

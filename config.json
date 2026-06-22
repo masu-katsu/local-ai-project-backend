@@ -1,6 +1,6 @@
 {
   "server": {
-    "port": 8080,
+    "port": 8000,
     "host": "localhost"
   },
   "model": {
@@ -12,7 +12,7 @@
     "timeout": 300
   },
   "websocket": {
-    "url": "ws://localhost:8080/ws",
+    "url": "ws://localhost:8000/ws",
     "protocol": "json"
   }
 }

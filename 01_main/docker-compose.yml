@@ -18,7 +18,7 @@ services:
       - PHI3_URL=http://phi3:8001
       - QWEN_URL=http://qwen:8002
       - CHROMA_HOST=chromadb
-      - CHROMA_PORT=8000
+      - CHROMA_PORT=8003
       - REDIS_URL=redis://redis:6379
       - MEM0_URL=http://mem0:8080
       - LANGGRAPH_URL=http://langgraph:8081
@@ -98,6 +98,8 @@ services:
   chromadb:
     image: chromadb/chroma:latest
     container_name: ai-chromadb
+    ports:
+      - "8003:8000"
     environment:
       - ANONYMIZED_TELEMETRY=FALSE
     volumes:

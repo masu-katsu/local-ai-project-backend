@@ -134,7 +134,7 @@ class MemoryOrganizer:
         category: str = "general"
     ) -> str:
         """
-        記憶を保存
+        記憶を保存（Mem0 API連携）
         
         Returns:
             memory_id
@@ -160,11 +160,13 @@ class MemoryOrganizer:
                 json=memory
             )
             response.raise_for_status()
+            result = response.json()
             logger.info(f"記憶保存: {memory_id} - {content[:50]}")
+            return result.get("memory_id", memory_id)
         except Exception as e:
             logger.error(f"記憶保存失敗: {e}")
-        
-        return memory_id
+            # フォールバック: ローカルに保存（Redisなど）
+            return memory_id
     
     async def search_memories(
         self,
@@ -173,18 +175,19 @@ class MemoryOrganizer:
         top_k: int = 5
     ) -> List[Dict[str, Any]]:
         """
-        記憶を検索
+        記憶を検索（Mem0 API連携）
         
         Returns:
             関連記憶のリスト
         """
         try:
             response = await self.client.get(
-                f"{self.mem0_url}/memories/search/{user_id}",
-                params={"query": query, "top_k": top_k}
+                f"{self.mem0_url}/memories/search",
+                params={"user_id": user_id, "query": query, "top_k": top_k}
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            return result.get("memories", [])
         except Exception as e:
             logger.error(f"記憶検索失敗: {e}")
             return []
@@ -195,12 +198,12 @@ class MemoryOrganizer:
         delta: float = 0.1
     ) -> bool:
         """
-        重要度を更新
+        重要度を更新（Mem0 API連携）
         """
         try:
-            response = await self.client.put(
-                f"{self.mem0_url}/memories/{memory_id}/importance",
-                params={"delta": delta}
+            response = await self.client.patch(
+                f"{self.mem0_url}/memories/{memory_id}",
+                json={"importance_delta": delta}
             )
             response.raise_for_status()
             return True
@@ -214,19 +217,20 @@ class MemoryOrganizer:
         category: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        ユーザーの記憶を取得
+        ユーザーの記憶を取得（Mem0 API連携）
         """
         try:
-            params = {}
+            params = {"user_id": user_id}
             if category:
                 params["category"] = category
             
             response = await self.client.get(
-                f"{self.mem0_url}/memories/{user_id}",
+                f"{self.mem0_url}/memories",
                 params=params
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            return result.get("memories", [])
         except Exception as e:
             logger.error(f"ユーザー記憶取得失敗: {e}")
             return []

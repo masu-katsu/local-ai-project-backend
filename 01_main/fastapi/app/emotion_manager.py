@@ -2,62 +2,156 @@ import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
 import json
+import httpx
+import os
+import re
 
 logger = logging.getLogger(__name__)
 
 class EmotionManager:
     """感情管理システム"""
     
-    def __init__(self):
+    def __init__(self, phi3_url: str = None):
         self.emotion_history: Dict[str, list] = {}
+        self.phi3_url = phi3_url or os.getenv("PHI3_URL", "http://phi3:8001")
+        self.client = httpx.AsyncClient(timeout=30.0)
+        logger.info(f"EmotionManager初期化: LLMベース感情検出有効 ({self.phi3_url})")
     
-    def detect_emotion(
+    async def detect_emotion(
         self,
         message: str,
         current_emotion: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        メッセージから感情を検出
+        メッセージから感情を検出（LLMベース）
         
         Returns:
             emotion: {"mood": str, "energy": int, "confidence": float}
         """
-        # 簡易実装（実際はLLMを使用）
+        try:
+            # LLMを使用して感情を分析
+            prompt = f"""
+以下のメッセージから感情を分析してください。JSON形式で出力してください。
+
+メッセージ: {message}
+
+出力形式:
+{{
+  "mood": "happy|sad|excited|curious|neutral|angry|anxious",
+  "energy": 0-100の整数,
+  "confidence": 0.0-1.0の小数,
+  "reason": "感情判断の理由"
+}}
+
+感情カテゴリ:
+- happy: 喜び、感謝、満足
+- sad: 悲しみ、失望、後悔
+- excited: 興奮、期待、興味
+- curious: 好奇心、疑問、探求
+- neutral: 中立、平穏
+- angry: 怒り、不満
+- anxious: 不安、心配
+"""
+            
+            response = await self.client.post(
+                f"{self.phi3_url}/generate",
+                json={
+                    "prompt": prompt,
+                    "max_tokens": 256,
+                    "temperature": 0.3
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            llm_response = data.get("response", "")
+            
+            # JSONをパース
+            emotion_data = self._parse_emotion_response(llm_response)
+            
+            if emotion_data:
+                logger.info(f"LLM感情検出: {emotion_data['mood']} (energy={emotion_data['energy']}, confidence={emotion_data['confidence']})")
+                return {
+                    "mood": emotion_data["mood"],
+                    "energy": emotion_data["energy"],
+                    "confidence": emotion_data["confidence"],
+                    "reason": emotion_data.get("reason", ""),
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+        except Exception as e:
+            logger.warning(f"LLM感情検出失敗、フォールバック使用: {e}")
+        
+        # フォールバック: キーワードベース
+        return self._fallback_emotion_detection(message)
+    
+    def _parse_emotion_response(self, llm_response: str) -> Optional[Dict[str, Any]]:
+        """LLMレスポンスから感情データをパース"""
+        try:
+            # JSON部分を抽出
+            json_match = re.search(r'\{[\s\S]*\}', llm_response)
+            if json_match:
+                data = json.loads(json_match.group())
+                
+                # バリデーション
+                valid_moods = ["happy", "sad", "excited", "curious", "neutral", "angry", "anxious"]
+                mood = data.get("mood", "neutral")
+                if mood not in valid_moods:
+                    mood = "neutral"
+                
+                energy = int(data.get("energy", 50))
+                energy = max(0, min(100, energy))  # 0-100の範囲に制限
+                
+                confidence = float(data.get("confidence", 0.7))
+                confidence = max(0.0, min(1.0, confidence))  # 0.0-1.0の範囲に制限
+                
+                return {
+                    "mood": mood,
+                    "energy": energy,
+                    "confidence": confidence,
+                    "reason": data.get("reason", "")
+                }
+        except Exception as e:
+            logger.warning(f"感情レスポンスパース失敗: {e}")
+        
+        return None
+    
+    def _fallback_emotion_detection(self, message: str) -> Dict[str, Any]:
+        """フォールバック: キーワードベース感情検出"""
         message_lower = message.lower()
         
         mood = "neutral"
         energy = 50
-        confidence = 0.7
+        confidence = 0.5
         
         # ポジティブキーワード
         positive_words = ["ありがとう", "すごい", "嬉しい", "楽しい", "良い", "よかった"]
         if any(word in message for word in positive_words):
             mood = "happy"
             energy = 70
-            confidence = 0.8
+            confidence = 0.6
         
         # ネガティブキーワード
         negative_words = ["残念", "悲しい", "怒り", "嫌", "ダメ", "失敗"]
         if any(word in message for word in negative_words):
             mood = "sad"
             energy = 30
-            confidence = 0.8
+            confidence = 0.6
         
         # 興味・興奮
         excited_words = ["面白い", "ワクワク", "興味", "知りたい"]
         if any(word in message for word in excited_words):
             mood = "excited"
             energy = 85
-            confidence = 0.8
+            confidence = 0.6
         
         # 疑問・思考
         question_words = ["?", "？", "どうして", "なぜ", "教えて"]
         if any(word in message for word in question_words):
             mood = "curious"
             energy = 60
-            confidence = 0.7
+            confidence = 0.5
         
-        logger.info(f"感情検出: {mood} (energy={energy}, confidence={confidence})")
+        logger.info(f"フォールバック感情検出: {mood} (energy={energy}, confidence={confidence})")
         
         return {
             "mood": mood,
