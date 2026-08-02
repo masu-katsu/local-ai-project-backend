@@ -89,7 +89,7 @@ class ChatResponse(BaseModel):
 @app.middleware("http")
 async def verify_api_key(request: Request, call_next):
     # ヘルスチェックとドキュメントはスキップ
-    skip_paths = ["/api/health", "/docs", "/openapi.json", "/redoc"]
+    skip_paths = ["/health", "/api/health", "/docs", "/openapi.json", "/redoc"]
     if request.url.path in skip_paths:
         return await call_next(request)
 
@@ -105,6 +105,7 @@ async def verify_api_key(request: Request, call_next):
 # ============================================
 # エンドポイント
 # ============================================
+@app.get("/health")
 @app.get("/api/health")
 async def health_check():
     """ヘルスチェック - 各サービスの状態を確認"""
@@ -122,6 +123,7 @@ async def health_check():
 
 
 @app.post("/api/chat", response_model=ChatResponse)
+@app.post("/unity/predict", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
     メインのチャットエンドポイント

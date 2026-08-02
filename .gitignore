@@ -17,7 +17,6 @@ Dockerfile
 [Bb]uild/
 [Bb]uilds/
 [Ll]ogs/
-<<<<<<< HEAD
 UserSettings/
 
 *.csproj
@@ -36,13 +35,3 @@ Thumbs.db
 __pycache__
 *.pyc
 .cache/
-=======
-
-# General 
-*.log
-*.tmp
-*.bak
-*.swp
-*.DS_Store
-*.env
->>>>>>> c295019a0cc828d6f5fb63c42f22af5732252b2e

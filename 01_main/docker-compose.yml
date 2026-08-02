@@ -28,6 +28,7 @@ services:
       - backend     # 内部AI通信
     depends_on:
       - phi3
+      - qwen
       - chromadb
     restart: unless-stopped
 
@@ -56,7 +57,7 @@ services:
     restart: unless-stopped
 
   # ------------------------------------------
-  # Qwen 生成AI（GPU動作）
+  # Qwen 生成AI（CPU/GPU 自動切替）
   # ------------------------------------------
   qwen:
     build:
@@ -64,20 +65,13 @@ services:
       dockerfile: Dockerfile
     container_name: ai-qwen
     environment:
-      - MODEL_PATH=/models/qwen/Qwen2.5-Coder-3B-4bit.gguf
+      - MODEL_PATH=/03_models/qwen/Qwen2.5-Coder-3B-4bit.gguf
       - MAX_TOKENS=${QWEN_MAX_TOKENS:-2048}
-      - N_GPU_LAYERS=-1
+      - N_GPU_LAYERS=${QWEN_GPU_LAYERS:-0}
     volumes:
-      - ../03_models/qwen:/models/qwen:ro    # モデルファイル（読み取り専用）
+      - ../03_models/qwen:/03_models/qwen:ro    # モデルファイル（読み取り専用）
     networks:
       - backend     # 内部ネットワークのみ
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1                        # GPU 1枚使用
-              capabilities: [gpu]
     restart: unless-stopped
 
   # ------------------------------------------
