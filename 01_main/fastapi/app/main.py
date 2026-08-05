@@ -2,7 +2,7 @@
 # FastAPI メインサーバー（司令塔）
 # ============================================
 # すべてのリクエストはここを通る
-# Unity → FastAPI → AI(Phi3/Qwen) → FastAPI → Unity
+# Unity → FastAPI → Qwen → FastAPI → Unity
 # ============================================
 
 import os
@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 # 環境変数
 # ============================================
 API_KEY = os.getenv("API_KEY", "your-secret-key-here")
-PHI3_URL = os.getenv("PHI3_URL", "http://phi3:8001")
 QWEN_URL = os.getenv("QWEN_URL", "http://qwen:8002")
 
 # ============================================
@@ -59,7 +58,7 @@ app.add_middleware(
 )
 
 # ルーターと会話履歴の初期化
-ai_router = AIRouter(phi3_url=PHI3_URL, qwen_url=QWEN_URL)
+ai_router = AIRouter(qwen_url=QWEN_URL)
 conversation_history = ConversationHistory()
 
 
@@ -109,15 +108,14 @@ async def verify_api_key(request: Request, call_next):
 @app.get("/api/health")
 async def health_check():
     """ヘルスチェック - 各サービスの状態を確認"""
-    phi3_status = await ai_router.check_health("phi3")
     qwen_status = await ai_router.check_health("qwen")
 
     return {
         "status": "running",
         "services": {
             "fastapi": "ok",
-            "phi3": phi3_status,
             "qwen": qwen_status,
+            "phi3": "disabled",
         },
     }
 
@@ -147,19 +145,12 @@ async def chat(request: ChatRequest):
     )
     
     # =========================================
-    # Step 2: Intent分類（Phi3）→ 処理分岐（TaskRouter）
+    # Step 2: 直接 Qwen に送信
     # =========================================
-    if request.force_model:
-        # 互換性のため force_model は残す（通常運用は intent -> qwen 固定）
-        selected_model = request.force_model
-        intent = "chat"
-        routed_message = request.message
-        logger.info(f"[{user_id}]   → モデル強制指定: {selected_model}")
-    else:
-        intent = await ai_router.classify_intent(request.message)
-        selected_model = "qwen"
-        routed_message = ai_router.build_task_prompt(intent, request.message)
-        logger.info(f"[{user_id}]   → intent: {intent} / executor: {selected_model}")
+    intent = "chat"
+    selected_model = "qwen"
+    routed_message = ai_router.build_task_prompt(request.message)
+    logger.info(f"[{user_id}]   → executor: {selected_model}")
     
     # =========================================
     # Step 3: 実行AIにリクエスト送信（通常はQwen）
@@ -241,6 +232,5 @@ async def clear_history():
 async def startup_event():
     logger.info("=" * 50)
     logger.info("ローカルAI 制御サーバー起動")
-    logger.info(f"  Phi3 URL: {PHI3_URL}")
     logger.info(f"  Qwen URL: {QWEN_URL}")
     logger.info("=" * 50)

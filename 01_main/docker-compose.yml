@@ -27,33 +27,8 @@ services:
       - frontend    # 外部アクセス可能
       - backend     # 内部AI通信
     depends_on:
-      - phi3
       - qwen
       - chromadb
-    restart: unless-stopped
-
-  # ------------------------------------------
-  # Phi3 会話AI（CPU動作）
-  # ------------------------------------------
-  phi3:
-    build:
-      context: ./phi3
-      dockerfile: Dockerfile
-    container_name: ai-phi3
-    environment:
-      - MODEL_PATH=/models/phi3/Phi-3-mini-4k-instruct-q4.gguf
-      - MAX_TOKENS=${PHI3_MAX_TOKENS:-512}
-      - THREADS=${PHI3_THREADS:-4}
-    volumes:
-      - ../03_models/phi3:/models/phi3:ro    # モデルファイル（読み取り専用）
-    networks:
-      - backend     # 内部ネットワークのみ（外部非公開）
-    deploy:
-      resources:
-        limits:
-          memory: 8G                          # メモリ上限 8GB
-        reservations:
-          memory: 4G                          # 最低確保 4GB
     restart: unless-stopped
 
   # ------------------------------------------

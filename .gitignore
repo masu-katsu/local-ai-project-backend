@@ -1,16 +1,3 @@
-<<<<<<< HEAD
-=======
-# Python
-*.pyc
-*.pyo
-__pycache__/
-
-# Docker
-*.dockerignore
-Dockerfile
-
-# Unity
->>>>>>> c295019a0cc828d6f5fb63c42f22af5732252b2e
 [Ll]ibrary/
 [Tt]emp/
 [Oo]bj/
