@@ -8,8 +8,8 @@
 import os
 import json
 import logging
+import time
 from datetime import datetime
-from typing import Optional
 
 import chromadb
 
@@ -22,24 +22,35 @@ CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8003"))
 class ConversationHistory:
     def __init__(self):
         """ChromaDB に接続し、コレクションを初期化"""
-        try:
-            self.client = chromadb.HttpClient(
-                host=CHROMA_HOST,
-                port=CHROMA_PORT,
-            )
-            # コレクション（テーブルのようなもの）を取得or作成
-            self.collection = self.client.get_or_create_collection(
-                name="conversations",
-                metadata={"description": "会話履歴のベクトルストア"},
-            )
-            logger.info(
-                f"ChromaDB 接続成功 ({CHROMA_HOST}:{CHROMA_PORT})"
-                f" - 既存レコード数: {self.collection.count()}"
-            )
-        except Exception as e:
-            logger.error(f"ChromaDB 接続失敗: {e}")
-            logger.warning("会話履歴機能は無効化されます")
-            self.collection = None
+        self.client = None
+        self.collection = None
+
+        for attempt in range(10):
+            try:
+                self.client = chromadb.HttpClient(
+                    host=CHROMA_HOST,
+                    port=CHROMA_PORT,
+                )
+                self.collection = self.client.get_or_create_collection(
+                    name="conversations",
+                    metadata={"description": "会話履歴のベクトルストア"},
+                )
+                logger.info(
+                    f"ChromaDB 接続成功 ({CHROMA_HOST}:{CHROMA_PORT})"
+                    f" - 既存レコード数: {self.collection.count()}"
+                )
+                break
+            except Exception as e:
+                self.client = None
+                self.collection = None
+                if attempt == 9:
+                    logger.error(f"ChromaDB 接続失敗: {e}")
+                    logger.warning("会話履歴機能は無効化されます")
+                else:
+                    logger.warning(
+                        f"ChromaDB 接続待機中 ({attempt + 1}/10): {e}"
+                    )
+                    time.sleep(2)
 
     def save(
         self,
@@ -143,7 +154,6 @@ class ConversationHistory:
         try:
             results = self.collection.get(
                 where={"user_id": user_id},
-                limit=limit,
             )
 
             conversations = []
@@ -161,11 +171,21 @@ class ConversationHistory:
                 # タイムスタンプでソート（新しい順）
                 conversations.sort(key=lambda x: x["timestamp"], reverse=True)
 
-            return conversations
+            return conversations[:limit]
 
         except Exception as e:
             logger.error(f"  履歴取得失敗: {e}")
             return []
+
+    def clear_backup_files(self) -> None:
+        """会話バックアップのJSONLファイルをすべて削除"""
+        log_dir = os.getenv("LOG_DIR", "/logs")
+        if not os.path.isdir(log_dir):
+            return
+
+        for filename in os.listdir(log_dir):
+            if filename.endswith(".jsonl"):
+                os.remove(os.path.join(log_dir, filename))
 
     def _save_to_file(
         self,

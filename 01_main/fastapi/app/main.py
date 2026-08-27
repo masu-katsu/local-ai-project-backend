@@ -8,11 +8,10 @@
 import os
 import time
 import logging
-import asyncio
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.router import AIRouter
 from app.history import ConversationHistory
@@ -38,6 +37,16 @@ logger = logging.getLogger(__name__)
 # ============================================
 API_KEY = os.getenv("API_KEY", "your-secret-key-here")
 QWEN_URL = os.getenv("QWEN_URL", "http://qwen:8002")
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS", "http://localhost,http://127.0.0.1"
+    ).split(",")
+    if origin.strip()
+]
+
+if API_KEY in {"", "your-secret-key", "your-secret-key-here"}:
+    raise RuntimeError("API_KEY must be configured with a non-default value")
 
 # ============================================
 # FastAPI アプリ初期化
@@ -51,7 +60,7 @@ app = FastAPI(
 # CORS設定（Unity・スマホからのアクセスを許可）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 開発中は全許可、本番では制限する
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,14 +77,19 @@ conversation_history = ConversationHistory()
 class ChatRequest(BaseModel):
     """ユーザーからのチャットリクエスト"""
     message: str = Field(..., description="ユーザーのメッセージ", min_length=1)
-    user_id: str = Field(default="default_user", description="ユーザーID")
-    force_model: Optional[str] = Field(
-        default=None, description="AIを強制指定（phi3 / qwen）"
+    user_id: str = Field(
+        default="default_user",
+        description="ユーザーID",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
     )
 
 
 class ChatResponse(BaseModel):
     """AIからのレスポンス"""
+    model_config = ConfigDict(protected_namespaces=())
+
     response: str = Field(..., description="AIの応答テキスト")
     model_used: str = Field(..., description="使用したAIモデル名")
     processing_time: float = Field(..., description="処理時間（秒）")
@@ -95,8 +109,8 @@ async def verify_api_key(request: Request, call_next):
     # APIキーの検証
     api_key = request.headers.get("X-API-Key")
     if api_key != API_KEY:
-        logger.warning(f"不正なAPIキー: {api_key} from {request.client.host}")
-        raise HTTPException(status_code=401, detail="無効なAPIキーです")
+        logger.warning(f"不正なAPIキー from {request.client.host}")
+        return JSONResponse(status_code=401, content={"detail": "無効なAPIキーです"})
 
     return await call_next(request)
 
@@ -111,11 +125,10 @@ async def health_check():
     qwen_status = await ai_router.check_health("qwen")
 
     return {
-        "status": "running",
+        "status": "running" if qwen_status == "ok" else "degraded",
         "services": {
             "fastapi": "ok",
             "qwen": qwen_status,
-            "phi3": "disabled",
         },
     }
 
@@ -147,7 +160,6 @@ async def chat(request: ChatRequest):
     # =========================================
     # Step 2: 直接 Qwen に送信
     # =========================================
-    intent = "chat"
     selected_model = "qwen"
     routed_message = ai_router.build_task_prompt(request.message)
     logger.info(f"[{user_id}]   → executor: {selected_model}")
@@ -188,18 +200,26 @@ async def chat(request: ChatRequest):
     )
     
     processing_time = round(time.time() - start_time, 3)
-    logger.info(f"[{user_id}]   → 応答完了 ({processing_time}秒, {selected_model}, intent={intent})")
+    logger.info(f"[{user_id}]   → 応答完了 ({processing_time}秒, {selected_model})")
     
     return ChatResponse(
         response=ai_response,
-        model_used=f"{selected_model}:{intent}",
+        model_used=f"{selected_model}:chat",
         processing_time=processing_time,
         context_used=len(related_context) > 0,
     )
 
 
 @app.get("/api/history")
-async def get_history(user_id: str = "default_user", limit: int = 20):
+async def get_history(
+    user_id: str = Query(
+        default="default_user",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
+    limit: int = Query(default=20, ge=1, le=100),
+):
     """会話履歴を取得"""
     history = conversation_history.get_recent(user_id=user_id, limit=limit)
     return {"user_id": user_id, "conversations": history, "count": len(history)}
@@ -216,6 +236,7 @@ async def clear_history():
                 name="conversations",
                 metadata={"description": "会話履歴のベクトルストア"},
             )
+            conversation_history.clear_backup_files()
             logger.info("会話履歴をリセットしました")
             return {"status": "ok", "message": "会話履歴をリセットしました"}
         else:

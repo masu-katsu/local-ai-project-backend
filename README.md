@@ -1,146 +1,197 @@
-# ローカルAIアプリ（Local AI Stack）
+# Local AI Project
 
-Dockerコンテナ群でローカルAI（Qwen）を動かし、**FastAPIを司令塔（ゲートウェイ）として外部（Unity・スマホなど）とAIモデル間の通信を仲介する**ためのプロジェクトです。すべてローカル環境で完結し、クラウドAPIへの依存なしに動作します。
+Docker Composeで動作するローカルAIチャットシステムです。
+FastAPIがクライアントからのリクエストを受け、ChromaDBから関連する会話を検索し、Qwenで応答を生成します。
+生成した会話はChromaDBとJSONLファイルへ保存されます。
 
-## 構成図
+## 構成
 
-```
-Unity / スマホ / 外部クライアント
-        │  HTTP (X-API-Key ヘッダ必須)
-        ▼
-┌─────────────────────┐
-│  FastAPI（司令塔）    │  :8000  ← frontend / backend 両方に参加
-│  - APIキー認証        │
-│  - Qwen直接送信       │
-│  - 会話履歴の保存/検索 │
-└──────────┬──────────┘
-           │ backend（internalネットワーク・外部非公開）
-   ┌───────┼────────┬─────────────┐
-   ▼                ▼             ▼
-┌────────┐     ┌────────┐   ┌───────────┐
-│  Qwen   │     │ ChromaDB │
-│ 実行AI  │     │ ベクトルDB │
-│ :8002   │     │  :8000    │
-│ CPU/GPU │     │ 履歴検索用 │
-└────────┘     └───────────┘
+```text
+クライアント（Unity / スマートフォン / HTTPクライアント）
+        |
+        v
+FastAPI :8000
+  |             |
+  v             v
+ChromaDB :8000  Qwen :8002
+                  |
+                  v
+        Qwen2.5-Coder-3B GGUF
 ```
 
-## コンポーネント
+- `fastapi`: API、認証、履歴検索、Qwenへの転送
+- `qwen`: `llama-cpp-python` によるGGUFモデル推論
+- `chromadb`: 会話履歴のベクトル保存と類似検索
+- `02_logs/conversations`: JSONL会話バックアップ
+- `02_logs/system`: FastAPIシステムログ
+- `03_models/qwen`: Qwen GGUFモデル
 
-### 1. FastAPI（`01_main/fastapi`）— 司令塔
-すべてのリクエストを受け付けるゲートウェイ。
-- `X-API-Key` ヘッダによるAPIキー認証ミドルウェア（`/health` `/docs` などは除外）
-- リクエストごとに ChromaDB から関連する過去会話を検索
-- 受け取った入力をそのままQwenへ送信し、応答を生成させる（`router.py`）
-- 会話をChromaDB＋JSONLファイル（`02_logs/conversations/`）の両方に保存（`history.py`）
+## 必要条件
 
-**主なエンドポイント**
-| メソッド | パス | 内容 |
-|---|---|---|
-| GET | `/health`, `/api/health` | 各サービスの死活確認（認証不要） |
-| POST | `/api/chat`, `/unity/predict` | チャット本体（同じ処理を2つのパスで公開） |
-| GET | `/api/history` | 会話履歴取得（`user_id`, `limit`） |
-| DELETE | `/api/history` | ChromaDB上の会話履歴を全削除 |
+- Windows
+- Docker Desktop（Docker Compose対応）
+- Qwen GGUFモデルファイル
+- モデルファイルを次の場所へ配置
 
-### 2. Qwen（`01_main/qwen`）— 実行AI（コード生成・長文生成）
-- FastAPI から直接受け取った入力をもとに応答を生成する
-- CPU/GPUを環境変数で切り替え可能（`N_GPU_LAYERS=0` でCPU動作）
-
-### 3. ChromaDB — 会話履歴のベクトルストア
-- ユーザー発話とAI応答のペアを埋め込み、意味的な類似度で過去の関連会話を検索
-- `max_distance` で関連性の低い結果を除外
-
-## ディレクトリ構成
-
-```
-local-ai-project/
-├── 01_main/
-│   ├── docker-compose.yml
-│   ├── .env                    # 環境変数（Git管理外にすること）
-│   ├── fastapi/
-│   │   ├── Dockerfile
-│   │   ├── requirements.txt
-│   │   └── app/
-│   │       ├── main.py         # エンドポイント定義・認証
-│   │       ├── router.py       # 意図分類・AI振り分け
-│   │       └── history.py      # ChromaDB連携・履歴保存
-│   └── qwen/
-│       ├── Dockerfile
-│       ├── requirements.txt
-│       └── app/main.py
-├── 02_logs/                     # 会話ログ・ChromaDB永続化データ
-│   ├── conversations/*.jsonl
-│   ├── chroma_db/
-│   └── system/
-├── 03_models/                   # GGUFモデル格納先（各自配置）
-│   └── qwen/
-└── config.json
-```
-
-## セットアップ
-
-### 1. モデルファイルの配置
-以下にGGUF形式のモデルファイルを配置してください（`docker-compose.yml` の volumes でコンテナにマウントされます）。
-
-```
+```text
 03_models/qwen/Qwen2.5-Coder-3B-4bit.gguf
 ```
 
-### 2. 環境変数の設定
-`01_main/.env` を編集します。
+## 設定
 
-```env
+`01_main/.env` を作成し、少なくともAPIキーを設定します。`.env` はGit管理対象外です。
+
+```dotenv
 FASTAPI_PORT=8000
-API_KEY=<必ず自分で生成した値に変更してください>
-
+API_KEY=ここに十分に長いランダムな秘密値を設定
 QWEN_MAX_TOKENS=2048
-
-BING_API_KEY=          # Web検索を使う場合のみ設定
+CORS_ORIGINS=http://localhost,http://127.0.0.1
 ```
 
-> ⚠️ **重要**: サンプルの `.env` には既に具体的なAPIキーの値が入った状態でリポジトリに含まれています。外部公開・共有前に必ず新しい値へ変更し、`.env` を `.gitignore` に含めてコミット対象から外してください。
+`API_KEY` に初期値やサンプル値を使用しないでください。
+APIキーを変更した場合、以後のリクエストには新しいキーを使用します。
 
-### 3. 起動
+## 起動
 
-```bash
-cd 01_main
+PowerShellでプロジェクトのルートから実行します。
+
+```powershell
+Set-Location D:\local-ai-project\01_main
 docker compose up -d --build
 ```
 
-起動確認:
-```bash
-curl http://localhost:8000/health
+サービス状態を確認します。
+
+```powershell
+docker compose ps
 ```
 
-### 4. チャットの呼び出し例
+初回起動時はQwenモデルの読み込みに時間がかかります。読み込み中はFastAPIのヘルス状態が `degraded` になり、完了すると `running` になります。
 
-```bash
-curl -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: <.envで設定したAPI_KEY>" \
-  -d '{"message": "こんにちは", "user_id": "default_user"}'
+## 停止・ログ
+
+```powershell
+Set-Location D:\local-ai-project\01_main
+docker compose stop
+docker compose logs -f fastapi qwen chromadb
 ```
 
-`force_model` は現在の実装では未使用です。入力はそのまま Qwen に送信されます。
+コンテナを停止して削除する場合は次を使用します。ホスト側のログとモデルは削除されません。
 
-## ネットワーク設計
+```powershell
+docker compose down
+```
 
-- `frontend` ネットワーク: FastAPIのみ参加。外部（Unity/スマホ）からアクセス可能な唯一の経路。
-- `backend` ネットワーク（`internal: true`）: FastAPI・Qwen・ChromaDBのみが参加し、外部から直接アクセス不可。Qwenは `backend` にしか属さないため、コンテナ外から直接叩くことはできません。
+## API
 
-## リソース制限
-- Qwenは `N_GPU_LAYERS` で GPU 使用量を調整でき、`0` の場合はGPUなし環境でもCPUのみで起動します。
+FastAPIのベースURLは次のとおりです。
 
-## ログ・データの永続化
+```text
+http://localhost:8000
+```
 
-| 種類 | 保存先 |
-|---|---|
-| 会話ログ（バックアップ用JSONL） | `02_logs/conversations/{user_id}_{日付}.jsonl` |
-| ChromaDBデータ | `02_logs/chroma_db/` |
-| システムログ（FastAPI） | コンテナ内 `/app/logs/system/fastapi.log` |
+### ヘルスチェック
 
-## 既知の注意点
+認証は不要です。
 
-- CORSは現状 `allow_origins=["*"]` で全許可の開発設定になっているため、本番運用時はオリジンを制限してください。
-- `.gitignore` にマージコンフリクトの解消漏れ（`<<<<<<<` 等のマーカー）が残っています。整理してからコミットすることを推奨します。
-- `fastapi/app/__pycache__` 内には `router.py` 等に対応しない古いモジュール（`memory_organizer` や `vision_processor` など）のキャッシュファイルが残存しています。過去に存在した機能の名残と思われるため、実体の `.py` がないことを確認の上で不要であれば削除してください。
+```powershell
+Invoke-WebRequest -UseBasicParsing http://localhost:8000/health
+```
+
+正常時の例:
+
+```json
+{
+  "status": "running",
+  "services": {
+    "fastapi": "ok",
+    "qwen": "ok"
+  }
+}
+```
+
+### チャット
+
+`X-API-Key` ヘッダーが必要です。
+
+```powershell
+$headers = @{ "X-API-Key" = "設定したAPI_KEY" }
+$body = @{ message = "こんにちは"; user_id = "default_user" } | ConvertTo-Json
+Invoke-WebRequest -UseBasicParsing `
+  -Uri http://localhost:8000/api/chat `
+  -Method Post `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+`/unity/predict` も `/api/chat` と同じ処理を実行します。
+
+### 履歴取得
+
+```powershell
+Invoke-WebRequest -UseBasicParsing `
+  -Uri "http://localhost:8000/api/history?user_id=default_user&limit=20" `
+  -Headers $headers
+```
+
+`user_id` は英数字、`_`、`-`のみ使用でき、1から64文字までです。
+`limit` は1から100まで指定できます。
+
+### 履歴削除
+
+ChromaDBの会話履歴とJSONLバックアップを削除します。削除後の復元はできません。
+
+```powershell
+Invoke-WebRequest -UseBasicParsing `
+  -Uri http://localhost:8000/api/history `
+  -Method Delete `
+  -Headers $headers
+```
+
+## データ保存
+
+| データ | 保存場所 |
+| --- | --- |
+| ChromaDB | `02_logs/chroma_db` |
+| 会話JSONL | `02_logs/conversations` |
+| FastAPIログ | `02_logs/system/fastapi.log` |
+| Qwenモデル | `03_models/qwen` |
+
+ChromaDBの埋め込みモデルが初回検索時に取得されるため、初回チャットでは外部ネットワーク接続と追加の待ち時間が発生する場合があります。
+
+## ネットワーク
+
+FastAPIだけがホストへポート公開されます。QwenとChromaDBはCompose内部のバックエンドネットワークからのみアクセスできます。
+
+- FastAPI: ホストの `8000` からアクセス
+- Qwen: Compose内部の `qwen:8002`
+- ChromaDB: Compose内部の `chromadb:8000`
+
+## トラブルシュート
+
+### Qwenが `offline` または `model_not_loaded`
+
+1. モデルファイルの名前と配置を確認します。
+2. `docker compose logs qwen` で読み込みエラーを確認します。
+3. モデル読み込みが完了するまで待ちます。
+
+### 履歴機能が使えない
+
+1. `docker compose ps` でChromaDBが起動中か確認します。
+2. `docker compose logs chromadb fastapi` で接続エラーを確認します。
+3. `02_logs/chroma_db` が書き込み可能か確認します。
+
+### `401 Unauthorized`
+
+`X-API-Key` ヘッダーが設定した `API_KEY` と一致しているか確認します。
+APIキーそのものをログやソースコードへ記録しないでください。
+
+## 開発時の確認
+
+```powershell
+Set-Location D:\local-ai-project
+python -m compileall -q 01_main
+Set-Location 01_main
+docker compose config --quiet
+```

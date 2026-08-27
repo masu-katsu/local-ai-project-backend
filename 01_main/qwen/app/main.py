@@ -8,7 +8,8 @@
 import os
 import re
 import logging
-from fastapi import FastAPI
+import asyncio
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 from llama_cpp import Llama
@@ -75,6 +76,7 @@ app = FastAPI(title="Qwen 生成AI", version="1.0.0")
 # モデル読み込み（起動時に1回だけ）
 # ============================================
 llm: Optional[Llama] = None
+generation_lock = asyncio.Lock()
 
 
 @app.on_event("startup")
@@ -88,7 +90,8 @@ async def load_model():
     logger.info(f"  最大トークン: {MAX_TOKENS}")
 
     try:
-        llm = Llama(
+        llm = await asyncio.to_thread(
+            Llama,
             model_path=MODEL_PATH,
             n_ctx=N_CTX,
             n_gpu_layers=N_GPU_LAYERS,
@@ -106,7 +109,7 @@ async def load_model():
 # ============================================
 class GenerateRequest(BaseModel):
     message: str = Field(..., description="ユーザーのメッセージ")
-    context: list[dict] = Field(default=[], description="過去の関連会話")
+    context: list[dict] = Field(default_factory=list, description="過去の関連会話")
 
 
 class GenerateResponse(BaseModel):
@@ -157,7 +160,7 @@ async def health():
     return {
         "status": "ok" if llm is not None else "model_not_loaded",
         "model": "Qwen2.5-Coder-3B",
-        "device": "gpu",
+        "device": "gpu" if N_GPU_LAYERS > 0 else "cpu",
     }
 
 
@@ -165,9 +168,9 @@ async def health():
 async def generate(request: GenerateRequest):
     """テキスト生成"""
     if llm is None:
-        return GenerateResponse(
-            response="モデルがまだ読み込まれていません。しばらくお待ちください。",
-            tokens_used=0,
+        raise HTTPException(
+            status_code=503,
+            detail="モデルがまだ読み込まれていません。しばらくお待ちください。",
         )
 
     logger.info(f"生成リクエスト: {request.message[:50]}...")
@@ -177,14 +180,16 @@ async def generate(request: GenerateRequest):
         prompt = build_prompt(request.message, request.context)
 
         # 生成実行
-        output = llm(
-            prompt,
-            max_tokens=MAX_TOKENS,
-            temperature=0.7,
-            top_p=0.9,
-            stop=["<|im_end|>", "<|im_start|>"],
-            echo=False,
-        )
+        async with generation_lock:
+            output = await asyncio.to_thread(
+                llm,
+                prompt,
+                max_tokens=MAX_TOKENS,
+                temperature=0.7,
+                top_p=0.9,
+                stop=["<|im_end|>", "<|im_start|>"],
+                echo=False,
+            )
 
         raw_text = output["choices"][0]["text"].strip()
         response_text = clean_response(raw_text)

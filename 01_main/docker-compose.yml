@@ -15,20 +15,23 @@ services:
     ports:
       - "${FASTAPI_PORT:-8000}:8000"        # 外部公開ポート（Unity・スマホからアクセス）
     environment:
-      - PHI3_URL=http://phi3:8001
       - QWEN_URL=http://qwen:8002
       - CHROMA_HOST=chromadb
       - CHROMA_PORT=8000
       - API_KEY=${API_KEY:-your-secret-key}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
       - LOG_DIR=/logs
     volumes:
       - ../02_logs/conversations:/logs       # 会話ログの保存先
+      - ../02_logs/system:/app/logs/system   # FastAPIシステムログの保存先
     networks:
       - frontend    # 外部アクセス可能
       - backend     # 内部AI通信
     depends_on:
-      - qwen
-      - chromadb
+      qwen:
+        condition: service_started
+      chromadb:
+        condition: service_started
     restart: unless-stopped
 
   # ------------------------------------------
@@ -58,7 +61,7 @@ services:
     environment:
       - ANONYMIZED_TELEMETRY=FALSE
     volumes:
-      - ../02_logs/chroma_db:/chroma/chroma   # データ永続化
+      - ../02_logs/chroma_db:/data            # データ永続化
     networks:
       - backend     # 内部ネットワークのみ
     restart: unless-stopped
@@ -75,4 +78,4 @@ networks:
     driver: bridge
     internal: true
     # internal: true → 外部からアクセス不可
-    # FastAPI, Phi3, Qwen, ChromaDB のみが通信可能
+    # FastAPI, Qwen, ChromaDB のみが通信可能

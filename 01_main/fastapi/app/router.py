@@ -1,13 +1,10 @@
 # ============================================
 # AI ルーター（Qwen 直結ルーティング）
 # ============================================
-# 1) Phi3 への意図分類を行わず
-# 2) FastAPI から直接 Qwen に送信
-# 3) Qwen を実行AIとして利用
+# FastAPI から直接 Qwen に送信
 # ============================================
 
 import logging
-from typing import Optional
 
 import httpx
 
@@ -15,18 +12,12 @@ logger = logging.getLogger(__name__)
 
 
 class AIRouter:
-    def __init__(self, qwen_url: str, phi3_url: Optional[str] = None):
-        self.phi3_url = phi3_url
+    def __init__(self, qwen_url: str):
         self.qwen_url = qwen_url
         self.client = httpx.AsyncClient(timeout=120.0)
-        logger.info("AIRouter 初期化完了（実行: Qwen / Phi3分類なし）")
+        logger.info("AIRouter 初期化完了（実行: Qwen）")
 
-    async def classify_intent(self, message: str) -> str:
-        """後方互換のため残す。実際には常に chat を返す。"""
-        logger.info("Phi3 分類は無効化されているため、chat として扱います")
-        return "chat"
-
-    def build_task_prompt(self, message: str, intent: Optional[str] = None) -> str:
+    def build_task_prompt(self, message: str) -> str:
         """Qwen へ直接送るためのシンプルなプロンプトを組み立てる。"""
         task_header = (
             "[MODE: CHAT]\n"
@@ -74,6 +65,4 @@ class AIRouter:
     def _get_url(self, model: str) -> str:
         if model == "qwen":
             return self.qwen_url
-        if model == "phi3":
-            return self.phi3_url or self.qwen_url
         raise ValueError(f"不明なモデル: {model}")
