@@ -26,13 +26,22 @@ class AIRouter:
         )
         return f"{task_header}\n\nユーザー入力:\n{message}"
 
-    async def send_to_ai(self, model: str, message: str, context: list[dict]) -> str:
+    async def send_to_ai(
+        self,
+        model: str,
+        message: str,
+        context: list[dict],
+        current_datetime: str | None = None,
+    ) -> str:
         """指定モデルにリクエスト送信する共通メソッド。"""
         url = self._get_url(model)
         payload = {
             "message": message,
             "context": context,
         }
+        if current_datetime is not None:
+            payload["current_datetime"] = current_datetime
+            payload["request_datetime"] = current_datetime
         try:
             response = await self.client.post(
                 f"{url}/generate",

@@ -45,11 +45,27 @@ ChromaDB :8000  Qwen :8002
 FASTAPI_PORT=8000
 API_KEY=ここに十分に長いランダムな秘密値を設定
 QWEN_MAX_TOKENS=2048
+TIME_DECAY_HALF_LIFE_DAYS=30
+APP_TIMEZONE=Asia/Tokyo
 CORS_ORIGINS=http://localhost,http://127.0.0.1
 ```
 
 `API_KEY` に初期値やサンプル値を使用しないでください。
 APIキーを変更した場合、以後のリクエストには新しいキーを使用します。
+
+`TIME_DECAY_HALF_LIFE_DAYS` は、古い会話の検索スコアをどの程度の期間で減衰させるかを日数で指定します。
+`APP_TIMEZONE` は保存日付や「昨日」などの期間判定に使うタイムゾーンです。
+
+## 会話処理の流れ
+
+1. FastAPIがリクエスト受付日時を `APP_TIMEZONE` 基準で取得します。
+2. 質問に含まれる期間表現（昨日、先週、先月、去年、具体的な日付など）を解析します。
+3. ChromaDBからユーザーIDと期間メタデータで事前に絞り込み、意味の近い候補を最大20件取得します。
+4. 候補20件を距離と時間減衰で再評価し、上位3件だけをQwenへ渡します。
+5. 現在日時、リクエスト受付日時、日付付きの過去会話、現在の質問を結合して回答を生成します。
+6. 回答と受付日時をChromaDBおよびJSONLバックアップへ保存します。
+
+期間指定がない場合も、ユーザーIDで分離した候補に対して時間減衰を適用します。
 
 ## 起動
 
@@ -127,6 +143,8 @@ Invoke-WebRequest -UseBasicParsing `
 
 `/unity/predict` も `/api/chat` と同じ処理を実行します。
 
+各チャットでは、サーバー側で取得した受付日時を検索基準時刻と生成プロンプトへ共通して使用します。
+
 ### 履歴取得
 
 ```powershell
@@ -158,6 +176,9 @@ Invoke-WebRequest -UseBasicParsing `
 | FastAPIログ | `02_logs/system/fastapi.log` |
 | Qwenモデル | `03_models/qwen` |
 
+ChromaDBの会話メタデータには、`user_id`、`timestamp`、`timestamp_unix`、`request_datetime`、`request_timestamp_unix`、`date`、モデル名、質問、回答を保存します。
+検索対象の文書本体にも受付日時と出来事の日付を含めるため、ベクトル検索後のプロンプトでも過去会話の時系列を参照できます。
+
 ChromaDBの埋め込みモデルが初回検索時に取得されるため、初回チャットでは外部ネットワーク接続と追加の待ち時間が発生する場合があります。
 
 ## ネットワーク
@@ -182,6 +203,8 @@ FastAPIだけがホストへポート公開されます。QwenとChromaDBはComp
 2. `docker compose logs chromadb fastapi` で接続エラーを確認します。
 3. `02_logs/chroma_db` が書き込み可能か確認します。
 
+新しい日時メタデータを持たない既存レコードは、期間指定検索の対象になりません。必要に応じて履歴を削除して新しい形式で保存し直してください。
+
 ### `401 Unauthorized`
 
 `X-API-Key` ヘッダーが設定した `API_KEY` と一致しているか確認します。
@@ -195,3 +218,13 @@ python -m compileall -q 01_main
 Set-Location 01_main
 docker compose config --quiet
 ```
+
+起動後の確認:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing http://localhost:8000/health
+docker compose ps
+docker compose logs --tail=100 fastapi qwen chromadb
+```
+
+`/health` の `status` が `running`、`services.qwen` が `ok` になれば、モデル読み込みを含む基本的な起動確認は完了です。

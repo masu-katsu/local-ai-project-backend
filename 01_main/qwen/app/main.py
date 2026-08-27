@@ -12,6 +12,8 @@ import asyncio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from llama_cpp import Llama
 
 
@@ -66,6 +68,10 @@ MODEL_PATH = os.getenv("MODEL_PATH", "/03_models/qwen/Qwen_Qwen3.5-4B-Q4_K_M.ggu
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
 N_GPU_LAYERS = int(os.getenv("N_GPU_LAYERS", "0"))  # 0 = CPU 優先 / GPU が無い環境でも起動
 N_CTX = 8192  # Qwen2.5 のコンテキストウィンドウ
+try:
+    APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Tokyo"))
+except Exception:
+    APP_TIMEZONE = timezone(timedelta(hours=9))
 
 # ============================================
 # FastAPI 初期化
@@ -110,6 +116,14 @@ async def load_model():
 class GenerateRequest(BaseModel):
     message: str = Field(..., description="ユーザーのメッセージ")
     context: list[dict] = Field(default_factory=list, description="過去の関連会話")
+    current_datetime: Optional[str] = Field(
+        default=None,
+        description="システムが取得した現在日時（ISO 8601）",
+    )
+    request_datetime: Optional[str] = Field(
+        default=None,
+        description="FastAPIがリクエストを受け付けた日時（ISO 8601）",
+    )
 
 
 class GenerateResponse(BaseModel):
@@ -120,17 +134,27 @@ class GenerateResponse(BaseModel):
 # ============================================
 # プロンプト構築
 # ============================================
-def build_prompt(message: str, context: list[dict]) -> str:
+def build_prompt(
+    message: str,
+    context: list[dict],
+    current_datetime: str | None = None,
+    request_datetime: str | None = None,
+) -> str:
     """
     Qwen 用のプロンプトを構築する
 
     過去の関連会話を「会話ターン」として埋め込む
     → モデルが自然に文脈を理解し、そのまま出力しなくなる
     """
+    current_datetime = current_datetime or datetime.now(APP_TIMEZONE).isoformat()
+    request_datetime = request_datetime or current_datetime
     system_content = (
         "あなたは高度な日本語AIアシスタントです。\n"
         "コード生成、文章作成、翻訳、分析など専門的なタスクが得意です。\n"
         "正確で詳細な回答を提供してください。\n"
+        f"現在日時: {current_datetime}\n"
+        f"リクエスト受付日時: {request_datetime}\n"
+        "過去の会話に含まれる日付を尊重し、現在日時と混同しないでください。\n"
     )
 
     # Qwen チャットテンプレート (ChatML形式) - system
@@ -141,7 +165,9 @@ def build_prompt(message: str, context: list[dict]) -> str:
         for conv in context:
             user_msg = conv.get("user_message", "")
             ai_resp = conv.get("ai_response", "")[:150]
-            prompt += f"<|im_start|>user\n{user_msg}<|im_end|>\n"
+            event_date = conv.get("date", "") or conv.get("timestamp", "")
+            date_prefix = f"[出来事の日付: {event_date}]\n" if event_date else ""
+            prompt += f"<|im_start|>user\n{date_prefix}{user_msg}<|im_end|>\n"
             prompt += f"<|im_start|>assistant\n{ai_resp}<|im_end|>\n"
 
     # 現在のユーザーメッセージ
@@ -177,7 +203,12 @@ async def generate(request: GenerateRequest):
 
     try:
         # プロンプト構築
-        prompt = build_prompt(request.message, request.context)
+        prompt = build_prompt(
+            request.message,
+            request.context,
+            request.current_datetime,
+            request.request_datetime,
+        )
 
         # 生成実行
         async with generation_lock:

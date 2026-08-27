@@ -8,6 +8,8 @@
 import os
 import time
 import logging
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -44,6 +46,10 @@ CORS_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+try:
+    APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Tokyo"))
+except Exception:
+    APP_TIMEZONE = timezone(timedelta(hours=9))
 
 if API_KEY in {"", "your-secret-key", "your-secret-key-here"}:
     raise RuntimeError("API_KEY must be configured with a non-default value")
@@ -145,6 +151,8 @@ async def chat(request: ChatRequest):
     """
     start_time = time.time()
     user_id = request.user_id
+    current_time = datetime.now(APP_TIMEZONE)
+    current_datetime = current_time.isoformat()
     
     logger.info(f"[{user_id}] リクエスト受信")
     
@@ -155,6 +163,7 @@ async def chat(request: ChatRequest):
         user_id=user_id,
         query=request.message,
         top_k=3,
+        reference_time=current_time,
     )
     
     # =========================================
@@ -172,6 +181,7 @@ async def chat(request: ChatRequest):
             model=selected_model,
             message=routed_message,
             context=related_context,
+            current_datetime=current_datetime,
         )
     except ConnectionError as e:
         logger.error(f"[{user_id}]   → AI接続エラー: {e}")
@@ -197,6 +207,7 @@ async def chat(request: ChatRequest):
         user_message=request.message,
         ai_response=ai_response,
         model_used=selected_model,
+        request_time=current_time,
     )
     
     processing_time = round(time.time() - start_time, 3)

@@ -8,8 +8,11 @@
 import os
 import json
 import logging
+import math
+import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import chromadb
 
@@ -17,6 +20,66 @@ logger = logging.getLogger(__name__)
 
 CHROMA_HOST = os.getenv("CHROMA_HOST", "chromadb")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8003"))
+TIME_DECAY_HALF_LIFE_DAYS = max(
+    0.1, float(os.getenv("TIME_DECAY_HALF_LIFE_DAYS", "30"))
+)
+try:
+    APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Tokyo"))
+except Exception:
+    APP_TIMEZONE = timezone(timedelta(hours=9))
+
+
+def extract_time_range(
+    query: str,
+    reference_time: datetime | None = None,
+) -> tuple[float, float] | None:
+    """質問に含まれる日本語の期間表現をUnix秒の範囲へ変換する。"""
+    now = reference_time or datetime.now(APP_TIMEZONE)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if re.search(r"一昨日", query):
+        start = today - timedelta(days=2)
+        end = start + timedelta(days=1)
+    elif re.search(r"昨日", query):
+        start = today - timedelta(days=1)
+        end = today
+    elif re.search(r"今日|本日", query):
+        start = today
+        end = today + timedelta(days=1)
+    elif re.search(r"先週|前週", query):
+        start = today - timedelta(days=today.weekday() + 7)
+        end = start + timedelta(days=7)
+    elif re.search(r"先月|前月", query):
+        first_of_this_month = today.replace(day=1)
+        end = first_of_this_month
+        start = (first_of_this_month - timedelta(days=1)).replace(day=1)
+    elif re.search(r"去年|昨年", query):
+        start = today.replace(year=today.year - 1, month=1, day=1)
+        end = today.replace(year=today.year, month=1, day=1)
+        if re.search(r"夏", query):
+            start = start.replace(month=6)
+            end = start.replace(month=9)
+    elif re.search(r"今年の夏|今年夏", query):
+        start = today.replace(month=6, day=1)
+        end = today.replace(month=9, day=1)
+    else:
+        date_match = re.search(r"(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?", query)
+        if not date_match:
+            return None
+        try:
+            start = datetime(
+                int(date_match.group(1)),
+                int(date_match.group(2)),
+                int(date_match.group(3)),
+                tzinfo=now.tzinfo,
+            )
+        except ValueError:
+            return None
+        end = start + timedelta(days=1)
+
+    return start.timestamp(), end.timestamp()
 
 
 class ConversationHistory:
@@ -58,6 +121,7 @@ class ConversationHistory:
         user_message: str,
         ai_response: str,
         model_used: str,
+        request_time: datetime | None = None,
     ) -> None:
         """
         会話を保存する
@@ -69,12 +133,21 @@ class ConversationHistory:
         if self.collection is None:
             return
 
-        timestamp = datetime.now().isoformat()
+        occurred_at = request_time or datetime.now(APP_TIMEZONE)
+        if occurred_at.tzinfo is None:
+            occurred_at = occurred_at.replace(tzinfo=APP_TIMEZONE)
+        timestamp = occurred_at.isoformat()
+        timestamp_unix = occurred_at.timestamp()
+        date_str = occurred_at.strftime("%Y-%m-%d")
         doc_id = f"{user_id}_{timestamp}"
 
         try:
             # Q&Aペアを検索対象にすることで、文脈の類似度を向上
-            search_document = f"Q: {user_message} A: {ai_response[:200]}"
+            search_document = (
+                f"リクエスト受付日時: {timestamp}\n"
+                f"出来事の日付: {date_str}\n"
+                f"Q: {user_message} A: {ai_response[:200]}"
+            )
             self.collection.add(
                 documents=[search_document],
                 metadatas=[
@@ -84,6 +157,10 @@ class ConversationHistory:
                         "ai_response": ai_response,
                         "model_used": model_used,
                         "timestamp": timestamp,
+                        "timestamp_unix": timestamp_unix,
+                        "request_datetime": timestamp,
+                        "request_timestamp_unix": timestamp_unix,
+                        "date": date_str,
                     }
                 ],
                 ids=[doc_id],
@@ -102,6 +179,7 @@ class ConversationHistory:
         query: str,
         top_k: int = 3,
         max_distance: float = 1.5,
+        reference_time: datetime | None = None,
     ) -> list[dict]:
         """
         現在のメッセージに関連する過去の会話を検索する
@@ -113,31 +191,71 @@ class ConversationHistory:
             return []
 
         try:
+            time_range = extract_time_range(query, reference_time)
+            where: dict = {"user_id": user_id}
+            if time_range is not None:
+                start_timestamp, end_timestamp = time_range
+                where = {
+                    "$and": [
+                        {"user_id": {"$eq": user_id}},
+                        {"timestamp_unix": {"$gte": start_timestamp}},
+                        {"timestamp_unix": {"$lt": end_timestamp}},
+                    ]
+                }
+
+            candidate_count = min(20, self.collection.count())
+            logger.info(f"  関連会話候補取得: 最大{candidate_count}件")
             results = self.collection.query(
                 query_texts=[query],
-                n_results=min(top_k, self.collection.count()),
-                where={"user_id": user_id},
+                n_results=candidate_count,
+                where=where,
                 include=["metadatas", "distances"],
             )
 
             # 結果を整形（類似度フィルタ付き）
             related = []
-            if results and results["metadatas"]:
+            if results and results.get("metadatas"):
                 distances = results.get("distances", [[]])[0]
+                ranked = []
                 for i, metadata in enumerate(results["metadatas"][0]):
                     # 距離が閾値以下のもののみ採用
                     dist = distances[i] if i < len(distances) else 999
                     if dist <= max_distance:
-                        related.append(
-                            {
-                                "user_message": metadata.get("user_message", ""),
-                                "ai_response": metadata.get("ai_response", ""),
-                                "timestamp": metadata.get("timestamp", ""),
-                            }
+                        timestamp_unix = metadata.get("timestamp_unix")
+                        try:
+                            age_days = max(
+                                0.0,
+                                (
+                                    (reference_time or datetime.now(APP_TIMEZONE)).timestamp()
+                                    - float(timestamp_unix)
+                                )
+                                / 86400,
+                            )
+                        except (TypeError, ValueError):
+                            age_days = 0.0
+                        freshness_penalty = 0.15 * (
+                            1 - math.exp(-age_days / TIME_DECAY_HALF_LIFE_DAYS)
+                        )
+                        ranked.append(
+                            (
+                                dist + freshness_penalty,
+                                {
+                                    "user_message": metadata.get("user_message", ""),
+                                    "ai_response": metadata.get("ai_response", ""),
+                                    "timestamp": metadata.get("timestamp", ""),
+                                    "request_datetime": metadata.get(
+                                        "request_datetime", metadata.get("timestamp", "")
+                                    ),
+                                    "date": metadata.get("date", ""),
+                                },
+                            )
                         )
                         logger.info(f"  関連会話 [{i+1}] 距離={dist:.3f}: {metadata.get('user_message', '')[:40]}")
                     else:
                         logger.info(f"  除外（距離超過）[{i+1}] 距離={dist:.3f}: {metadata.get('user_message', '')[:40]}")
+
+                ranked.sort(key=lambda item: item[0])
+                related = [item[1] for item in ranked[:top_k]]
 
             logger.info(f"  関連会話検索: {len(related)}件採用（フィルタ後）")
             return related
@@ -165,6 +283,10 @@ class ConversationHistory:
                             "ai_response": metadata.get("ai_response", ""),
                             "model_used": metadata.get("model_used", ""),
                             "timestamp": metadata.get("timestamp", ""),
+                            "request_datetime": metadata.get(
+                                "request_datetime", metadata.get("timestamp", "")
+                            ),
+                            "date": metadata.get("date", ""),
                         }
                     )
 
