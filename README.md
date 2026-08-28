@@ -16,7 +16,7 @@ FastAPI :8000
 ChromaDB :8000  Qwen :8002
                   |
                   v
-        Qwen2.5-Coder-3B GGUF
+        Qwen2.5-1.5B-instruct GGUF
 ```
 
 - `fastapi`: API、認証、履歴検索、Qwenへの転送
@@ -34,7 +34,7 @@ ChromaDB :8000  Qwen :8002
 - モデルファイルを次の場所へ配置
 
 ```text
-03_models/qwen/Qwen2.5-Coder-3B-4bit.gguf
+03_models/qwen/qwen2.5-1.5b-instruct-q4_k_m.gguf
 ```
 
 ## 設定
