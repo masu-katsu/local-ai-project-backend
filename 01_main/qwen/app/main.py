@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from llama_cpp import Llama
+from llama_cpp import Llama, llama_supports_gpu_offload
 
 
 def clean_response(text: str) -> str:
@@ -186,7 +186,9 @@ async def health():
     return {
         "status": "ok" if llm is not None else "model_not_loaded",
         "model": "Qwen2.5-Coder-3B",
-        "device": "gpu" if N_GPU_LAYERS > 0 else "cpu",
+        "device": "gpu" if N_GPU_LAYERS != 0 and llama_supports_gpu_offload() else "cpu",
+        "gpu_offload_supported": llama_supports_gpu_offload(),
+        "gpu_layers": N_GPU_LAYERS,
     }
 
 

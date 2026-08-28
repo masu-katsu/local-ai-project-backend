@@ -45,6 +45,7 @@ ChromaDB :8000  Qwen :8002
 FASTAPI_PORT=8000
 API_KEY=ここに十分に長いランダムな秘密値を設定
 QWEN_MAX_TOKENS=2048
+QWEN_GPU_LAYERS=0
 TIME_DECAY_HALF_LIFE_DAYS=30
 APP_TIMEZONE=Asia/Tokyo
 CORS_ORIGINS=http://localhost,http://127.0.0.1
@@ -55,6 +56,7 @@ APIキーを変更した場合、以後のリクエストには新しいキー�
 
 `TIME_DECAY_HALF_LIFE_DAYS` は、古い会話の検索スコアをどの程度の期間で減衰させるかを日数で指定します。
 `APP_TIMEZONE` は保存日付や「昨日」などの期間判定に使うタイムゾーンです。
+`QWEN_GPU_LAYERS=0` はCPUモードです。GPU利用にはCUDA対応の `llama-cpp-python` ビルドとDocker DesktopのNVIDIA GPU設定が別途必要です。現行の標準イメージはCPU版です。
 
 ## 会話処理の流れ
 
@@ -82,7 +84,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-初回起動時はQwenモデルの読み込みに時間がかかります。読み込み中はFastAPIのヘルス状態が `degraded` になり、完了すると `running` になります。
+初回起動時はQwenモデルの読み込みに時間がかかります。読み込み中はFastAPIのヘルス状態が `degraded` になり、完了すると `running` になります。GPU有効時はQwenのヘルス情報で `device: gpu` と表示されます。
 
 ## 停止・ログ
 
@@ -196,6 +198,7 @@ FastAPIだけがホストへポート公開されます。QwenとChromaDBはComp
 1. モデルファイルの名前と配置を確認します。
 2. `docker compose logs qwen` で読み込みエラーを確認します。
 3. モデル読み込みが完了するまで待ちます。
+4. `gpu_offload_supported: false` の場合、現在のイメージはCPU版です。GPU版へ変更する際はCUDA対応ビルドを用意してから検証してください。
 
 ### 履歴機能が使えない
 
