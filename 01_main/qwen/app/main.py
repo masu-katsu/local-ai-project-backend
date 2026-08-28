@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 # ============================================
 # 環境変数・設定
 # ============================================
-MODEL_PATH = os.getenv("MODEL_PATH", "/03_models/qwen/Qwen_Qwen3.5-4B-Q4_K_M.gguf")
+MODEL_PATH = os.getenv("MODEL_PATH", "/03_models/qwen/qwen2.5-1.5b-instruct-q4_k_m.gguf")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
 N_GPU_LAYERS = int(os.getenv("N_GPU_LAYERS", "0"))  # 0 = CPU 優先 / GPU が無い環境でも起動
 N_CTX = 8192  # Qwen2.5 のコンテキストウィンドウ
@@ -208,7 +208,7 @@ async def health():
     """ヘルスチェック"""
     return {
         "status": "ok" if llm is not None else "model_not_loaded",
-        "model": "Qwen2.5-Coder-3B",
+        "model": "Qwen2.5-1.5B-Instruct",
         "device": "gpu" if N_GPU_LAYERS != 0 and llama_supports_gpu_offload() else "cpu",
         "gpu_offload_supported": llama_supports_gpu_offload(),
         "gpu_layers": N_GPU_LAYERS,
