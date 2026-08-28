@@ -9,7 +9,11 @@ import os
 import re
 import logging
 import asyncio
+import json
+import threading
+from collections.abc import AsyncIterator
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime, timedelta, timezone
@@ -152,26 +156,45 @@ def build_prompt(
         "あなたは高度な日本語AIアシスタントです。\n"
         "コード生成、文章作成、翻訳、分析など専門的なタスクが得意です。\n"
         "正確で詳細な回答を提供してください。\n"
-        f"現在日時: {current_datetime}\n"
+        f"最新の現在日時（すべての回答の基準）: {current_datetime}\n"
         f"リクエスト受付日時: {request_datetime}\n"
-        "過去の会話に含まれる日付を尊重し、現在日時と混同しないでください。\n"
+        "ChromaDBから渡される情報はすべて過去の会話です。現在の会話や現在の情報と混同しないでください。\n"
+        "過去の会話に含まれる日時や過去のAI回答を、現在日時として使用しないでください。\n"
+        "日時を伝える場合は、必ず最新の現在日時を使用してください。\n"
     )
 
     # Qwen チャットテンプレート (ChatML形式) - system
     prompt = f"<|im_start|>system\n{system_content}<|im_end|>\n"
 
-    # 過去の関連会話を「会話ターン」として追加
+    # 過去の関連会話は、現在の会話と区別できるよう明示して追加する。
     if context:
+        prompt += (
+            "<|im_start|>system\n"
+            "ここからはChromaDBが参照した過去の会話（参考情報）です。"
+            "これらは現在の発言ではなく、含まれる日時や回答も過去のものです。"
+            "<|im_end|>\n"
+        )
         for conv in context:
             user_msg = conv.get("user_message", "")
             ai_resp = conv.get("ai_response", "")[:150]
             event_date = conv.get("date", "") or conv.get("timestamp", "")
-            date_prefix = f"[出来事の日付: {event_date}]\n" if event_date else ""
+            request_date = conv.get("request_datetime", "")
+            date_prefix = (
+                f"[過去の会話 / 出来事の日付: {event_date}]\n"
+                if event_date
+                else "[過去の会話]\n"
+            )
+            if request_date and request_date != event_date:
+                date_prefix += f"[過去の会話の受付日時: {request_date}]\n"
             prompt += f"<|im_start|>user\n{date_prefix}{user_msg}<|im_end|>\n"
             prompt += f"<|im_start|>assistant\n{ai_resp}<|im_end|>\n"
 
     # 現在のユーザーメッセージ
-    prompt += f"<|im_start|>user\n{message}<|im_end|>\n"
+    prompt += (
+        "<|im_start|>user\n"
+        f"[現在の会話 / 最新の現在日時（回答の基準）: {current_datetime}]\n"
+        f"{message}<|im_end|>\n"
+    )
     prompt += "<|im_start|>assistant\n"
 
     return prompt
@@ -192,9 +215,8 @@ async def health():
     }
 
 
-@app.post("/generate", response_model=GenerateResponse)
-async def generate(request: GenerateRequest):
-    """テキスト生成"""
+async def generate_chunks(request: GenerateRequest) -> AsyncIterator[str]:
+    """モデルの同期イテレータを非同期のテキストストリームへ変換する。"""
     if llm is None:
         raise HTTPException(
             status_code=503,
@@ -212,34 +234,83 @@ async def generate(request: GenerateRequest):
             request.request_datetime,
         )
 
-        # 生成実行
-        async with generation_lock:
-            output = await asyncio.to_thread(
-                llm,
-                prompt,
-                max_tokens=MAX_TOKENS,
-                temperature=0.7,
-                top_p=0.9,
-                stop=["<|im_end|>", "<|im_start|>"],
-                echo=False,
-            )
+        queue: asyncio.Queue[object] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        end_marker = object()
+        stop_event = threading.Event()
+        worker: asyncio.Task[None] | None = None
 
-        raw_text = output["choices"][0]["text"].strip()
-        response_text = clean_response(raw_text)
-        tokens_used = output.get("usage", {}).get("total_tokens", 0)
+        def enqueue(item: object) -> None:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:
+                # リクエスト切断後にイベントループが終了している場合は破棄する。
+                pass
 
-        if raw_text != response_text:
-            logger.info(f"メタ解説を除去: {len(raw_text)} → {len(response_text)}文字")
-        logger.info(f"生成完了: {tokens_used}トークン使用")
+        def generate_in_thread() -> None:
+            output_stream = None
+            try:
+                output_stream = llm(
+                    prompt,
+                    max_tokens=MAX_TOKENS,
+                    temperature=0.7,
+                    top_p=0.9,
+                    stop=["<|im_end|>", "<|im_start|>"],
+                    echo=False,
+                    stream=True,
+                )
+                for output in output_stream:
+                    if stop_event.is_set():
+                        break
+                    text = output["choices"][0].get("text", "")
+                    if text:
+                        enqueue(text)
+            except Exception as error:
+                if not stop_event.is_set():
+                    enqueue(error)
+            finally:
+                if output_stream is not None:
+                    close = getattr(output_stream, "close", None)
+                    if close is not None:
+                        close()
+                enqueue(end_marker)
 
-        return GenerateResponse(
-            response=response_text,
-            tokens_used=tokens_used,
-        )
+        try:
+            async with generation_lock:
+                worker = asyncio.create_task(asyncio.to_thread(generate_in_thread))
+                while True:
+                    item = await queue.get()
+                    if item is end_marker:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    yield item
+                await worker
+            logger.info("生成ストリーム完了")
+        finally:
+            stop_event.set()
+            if worker is not None and not worker.done():
+                await asyncio.shield(worker)
 
     except Exception as e:
         logger.error(f"生成エラー: {e}")
-        return GenerateResponse(
-            response="申し訳ありません、応答の生成中にエラーが発生しました。",
-            tokens_used=0,
+        raise HTTPException(
+            status_code=500,
+            detail="申し訳ありません、応答の生成中にエラーが発生しました。",
         )
+
+
+@app.post("/generate")
+async def generate(request: GenerateRequest):
+    """テキストをストリームで逐次生成する。"""
+    async def event_stream() -> AsyncIterator[str]:
+        async for chunk in generate_chunks(request):
+            yield "data: " + json.dumps(
+                {"text": chunk}, ensure_ascii=False
+            ) + "\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

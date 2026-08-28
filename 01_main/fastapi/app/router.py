@@ -5,6 +5,8 @@
 # ============================================
 
 import logging
+import json
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -26,14 +28,14 @@ class AIRouter:
         )
         return f"{task_header}\n\nユーザー入力:\n{message}"
 
-    async def send_to_ai(
+    async def send_to_ai_stream(
         self,
         model: str,
         message: str,
         context: list[dict],
         current_datetime: str | None = None,
-    ) -> str:
-        """指定モデルにリクエスト送信する共通メソッド。"""
+    ) -> AsyncIterator[str]:
+        """指定モデルの生成結果をチャンク単位で受信する。"""
         url = self._get_url(model)
         payload = {
             "message": message,
@@ -43,13 +45,21 @@ class AIRouter:
             payload["current_datetime"] = current_datetime
             payload["request_datetime"] = current_datetime
         try:
-            response = await self.client.post(
+            async with self.client.stream(
+                "POST",
                 f"{url}/generate",
                 json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data.get("response", "応答を取得できませんでした")
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line or line.startswith("event:"):
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = json.loads(line[5:].strip())
+                    text = data.get("text", "")
+                    if text:
+                        yield text
         except httpx.ConnectError:
             logger.error(f"{model} に接続できません: {url}")
             raise ConnectionError(f"{model} サービスに接続できません")

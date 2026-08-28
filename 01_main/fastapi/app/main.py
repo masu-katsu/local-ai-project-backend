@@ -8,11 +8,12 @@
 import os
 import time
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.router import AIRouter
@@ -139,8 +140,8 @@ async def health_check():
     }
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-@app.post("/unity/predict", response_model=ChatResponse)
+@app.post("/api/chat")
+@app.post("/unity/predict")
 async def chat(request: ChatRequest):
     """
     メインのチャットエンドポイント
@@ -176,48 +177,49 @@ async def chat(request: ChatRequest):
     # =========================================
     # Step 3: 実行AIにリクエスト送信（通常はQwen）
     # =========================================
-    try:
-        ai_response = await ai_router.send_to_ai(
-            model=selected_model,
-            message=routed_message,
-            context=related_context,
-            current_datetime=current_datetime,
-        )
-    except ConnectionError as e:
-        logger.error(f"[{user_id}]   → AI接続エラー: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"AI ({selected_model}) に接続できません。モデルがまだ起動中の可能性があります。"
-        )
-    except TimeoutError as e:
-        logger.error(f"[{user_id}]   → AIタイムアウト: {e}")
-        raise HTTPException(
-            status_code=504,
-            detail=f"AI ({selected_model}) の応答がタイムアウトしました。メッセージが長すぎる可能性があります。"
-        )
-    except Exception as e:
-        logger.error(f"[{user_id}]   → AI通信エラー: {e}")
-        raise HTTPException(status_code=503, detail=f"AI ({selected_model}) でエラーが発生しました: {str(e)}")
-    
-    # =========================================
-    # Step 4: 会話を保存
-    # =========================================
-    conversation_history.save(
-        user_id=user_id,
-        user_message=request.message,
-        ai_response=ai_response,
-        model_used=selected_model,
-        request_time=current_time,
-    )
-    
-    processing_time = round(time.time() - start_time, 3)
-    logger.info(f"[{user_id}]   → 応答完了 ({processing_time}秒, {selected_model})")
-    
-    return ChatResponse(
-        response=ai_response,
-        model_used=f"{selected_model}:chat",
-        processing_time=processing_time,
-        context_used=len(related_context) > 0,
+    async def event_stream():
+        response_parts: list[str] = []
+        try:
+            async for chunk in ai_router.send_to_ai_stream(
+                model=selected_model,
+                message=routed_message,
+                context=related_context,
+                current_datetime=current_datetime,
+            ):
+                for character in chunk:
+                    response_parts.append(character)
+                    yield f"event: token\ndata: {json.dumps({'text': character}, ensure_ascii=False)}\n\n"
+
+            ai_response = "".join(response_parts).strip()
+            conversation_history.save(
+                user_id=user_id,
+                user_message=request.message,
+                ai_response=ai_response,
+                model_used=selected_model,
+                request_time=current_time,
+            )
+            processing_time = round(time.time() - start_time, 3)
+            logger.info(f"[{user_id}]   → 応答完了 ({processing_time}秒, {selected_model})")
+            yield "event: done\ndata: " + json.dumps(
+                {
+                    "response": ai_response,
+                    "model_used": f"{selected_model}:chat",
+                    "processing_time": processing_time,
+                    "context_used": len(related_context) > 0,
+                },
+                ensure_ascii=False,
+            ) + "\n\n"
+        except Exception as e:
+            logger.error(f"[{user_id}]   → AIストリームエラー: {e}")
+            yield "event: error\ndata: " + json.dumps(
+                {"detail": "AI応答の生成中にエラーが発生しました"},
+                ensure_ascii=False,
+            ) + "\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
